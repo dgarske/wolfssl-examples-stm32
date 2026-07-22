@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -180,8 +180,8 @@ else
     $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_rng_ex.c \
     $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_pka.c
   # CCB targets (U3 only) need the CCB HAL driver module: ccbhal is the raw HAL
-  # reference; ccb under cubemx routes the wolfSSL port through HAL_CCB.
-  ifneq ($(filter $(TARGET),ccb ccbhal),)
+  # reference; ccb / cubecrypto under cubemx route the wolfSSL port through HAL_CCB.
+  ifneq ($(filter $(TARGET),ccb ccbhal cubecrypto),)
     HAL_C_SRC += $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_ccb.c
   endif
   # Filter out any files that don't exist (different family packs ship
@@ -432,6 +432,20 @@ ifeq ($(TARGET),cubeaes)
     $(error TARGET=cubeaes requires BOARD=u3 (NUCLEO-U385RG-Q))
   endif
   COMMON_DEFS += -DWOLF_CRYPTO_CB -DSTM32_CUBE_AES_ONLY
+endif
+# CubeMX full HW-crypto callback test -- HW ECDSA sign+verify (normal key -> PKA),
+# CCB-protected ECDSA (HAL_CCB), and AES-GCM, all through the crypto callback under
+# WOLF_CRYPTO_CB_ONLY_ECC + WOLF_CRYPTO_CB_ONLY_AES. Exercises the CubeMX device's
+# new ECDSA verify + normal-key sign handlers. Needs the HAL PKA + CCB drivers.
+ifeq ($(TARGET),cubecrypto)
+  ifneq ($(BUILD),cubemx)
+    $(error TARGET=cubecrypto requires BUILD=cubemx)
+  endif
+  ifeq ($(filter $(BOARD),u3),)
+    $(error TARGET=cubecrypto requires BOARD=u3 (NUCLEO-U385RG-Q))
+  endif
+  COMMON_DEFS += -DWOLFSSL_STM32_PKA -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB \
+                 -DWOLFSSL_STM32_CCB -DSTM32_CUBE_CRYPTO_ONLY
 endif
 
 ALL_C_SRC := $(SRC_C) $(WC_SRC)

@@ -894,6 +894,16 @@ extern "C" {
     #define WOLF_CRYPTO_CB_ONLY_AES
 #endif
 
+/* CubeMX full HW-crypto callback test (Makefile TARGET=cubecrypto ->
+ * -DSTM32_CUBE_CRYPTO_ONLY). Strips software ECC and AES so both route through
+ * the crypto callback -- the CubeMX device's HW ECDSA sign/verify (PKA), CCB
+ * ECDSA, and HAL AES. This is the customer's config shape; main_cubecrypto.c
+ * brings up the ST HAL PKA (hpka + HAL_PKA_Init) that the PKA path needs. */
+#ifdef STM32_CUBE_CRYPTO_ONLY
+    #define WOLF_CRYPTO_CB_ONLY_ECC
+    #define WOLF_CRYPTO_CB_ONLY_AES
+#endif
+
 /* G071RB is even tighter -- 128 KB flash / 36 KB RAM, AND no HW crypto
  * at all. The U083 trim still leaves the ECC P-256 SW path in which
  * overflows by ~48 KB. Take a more aggressive cut: drop ECC entirely
