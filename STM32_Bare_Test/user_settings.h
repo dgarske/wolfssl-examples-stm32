@@ -884,6 +884,16 @@ extern "C" {
     #define NO_ERROR_STRINGS  /* error.c strings table is ~20 KB */
 #endif
 
+/* CubeMX AES crypto-callback test (Makefile TARGET=cubeaes ->
+ * -DSTM32_CUBE_AES_ONLY). Turns on WOLF_CRYPTO_CB_ONLY_AES so the software AES
+ * core is stripped and every AES op routes through the crypto callback -- the
+ * new CubeMX AES device (wc_Stm32_CubeAesRegister). main_cubeaes.c registers it
+ * and runs AES-GCM KATs on the HAL. Only AES is exercised; the rest of the
+ * common config (ECC/SHA/etc.) stays as software but is unused here. */
+#ifdef STM32_CUBE_AES_ONLY
+    #define WOLF_CRYPTO_CB_ONLY_AES
+#endif
+
 /* G071RB is even tighter -- 128 KB flash / 36 KB RAM, AND no HW crypto
  * at all. The U083 trim still leaves the ECC P-256 SW path in which
  * overflows by ~48 KB. Take a more aggressive cut: drop ECC entirely

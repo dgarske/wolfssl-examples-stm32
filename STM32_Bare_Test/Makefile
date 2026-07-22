@@ -53,7 +53,7 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf),)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes),)
   $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
@@ -418,6 +418,20 @@ ifeq ($(TARGET),cbonly)
     COMMON_DEFS += -mcmse
     LDFLAGS     += -mcmse
   endif
+endif
+# CubeMX AES crypto-callback test -- verifies WOLF_CRYPTO_CB_ONLY_AES works on
+# the HAL build. Registers wc_Stm32_CubeAesRegister (the new CubeMX AES device
+# in wolfcrypt/src/port/st/stm32.c) and runs AES-GCM KATs with a plaintext key:
+# the device's AES-ECB handler keys GCM, then bulk GCM runs on the native HAL
+# engine. Requires BUILD=cubemx (HAL crypto driver) and BOARD=u3 (NUCLEO-U385RG-Q).
+ifeq ($(TARGET),cubeaes)
+  ifneq ($(BUILD),cubemx)
+    $(error TARGET=cubeaes requires BUILD=cubemx)
+  endif
+  ifeq ($(filter $(BOARD),u3),)
+    $(error TARGET=cubeaes requires BOARD=u3 (NUCLEO-U385RG-Q))
+  endif
+  COMMON_DEFS += -DWOLF_CRYPTO_CB -DSTM32_CUBE_AES_ONLY
 endif
 
 ALL_C_SRC := $(SRC_C) $(WC_SRC)
