@@ -180,6 +180,9 @@ has nothing to accelerate.
 | `ccbhal`| `src/main_ccbhal.c`| CubeMX `HAL_CCB_*` reference flow (provision + sign + SW-verify), `u3` only. |
 | `cbonly`| `src/main_cbonly.c`| Callback-only: ECDSA, full-payload AES-GCM, HMAC-SHA256, TRNG all on hardware, with the `STM32_BARE_CB_ONLY` software-strip preset. |
 | `puf` | `src/main_puf.c` | Configurable SRAM PUF (BCH(127,k,t) fuzzy extractor + HKDF) enroll/reconstruct regression in synthetic-SRAM mode. `PUF_T` selects the BCH profile (7/10/13/15), `PUF_CW` the codeword count. |
+| `aesplain`| `src/main_aesplain.c`| Plaintext-key AES vs DHUK-seed AES: registers both devices and selects per `Aes` by devId. Plaintext AES-GCM matches a published KAT; same key bytes yield different ciphertext under each device. SAES+DHUK boards. |
+
+`TARGET=aesplain` registers the plaintext-key AES device (`wc_Stm32_AesRegister(WOLFSSL_STM32_AES_DEVID)`) alongside the DHUK device (`wc_Stm32_DhukRegister(WC_DHUK_DEVID)`) in one bare `STM32_BARE_CB_ONLY` build, then proves an `Aes` on the plaintext devId reproduces a published AES-GCM vector (key used verbatim) while an `Aes` on the DHUK devId turns the same bytes into a device-bound key -- the two ciphertexts differ and each device decrypts its own output. Limited to the SAES + DHUK boards (`u3`, `u585`, `u545`, `c5a3`, `c562`).
 
 `TARGET=dhuk` is limited to the SAES + PKA + DHUK boards (`u3`, `u585`, `u545`) and adds `-DWOLFSSL_DHUK -DWOLF_CRYPTO_CB`, which enable the STM32 DHUK crypto-callback device (in `wolfcrypt/src/port/st/stm32.c`). An application registers the device once (`wc_Stm32_DhukRegister(WC_DHUK_DEVID)`), inits a normal `Aes` / `ecc_key` with `devId = WC_DHUK_DEVID`, supplies the 256-bit seed as the key (`wc_AesGcmSetKey` / `wc_AesSetKey`) or via `wc_ecc_import_wrapped_private`, then performs NORMAL wolfCrypt calls -- the device-bound key is derived inside SAES and never appears in software. `main_dhuk.c`:
 
