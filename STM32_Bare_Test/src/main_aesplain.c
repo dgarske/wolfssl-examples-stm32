@@ -92,7 +92,8 @@ static const byte g_kat_tag[16] = {
 
 /* AES-GCM one-shot on a given devId: encrypt into ct/tag. 0 on success. */
 static int gcm_encrypt(int devId, const byte* key, word32 keySz,
-    byte* ct, byte* tag, word32 tagSz, const byte* pt, word32 ptSz)
+    byte* ct, byte* tag, word32 tagSz, const byte* pt, word32 ptSz,
+    const byte* aad, word32 aadSz)
 {
     Aes aes;
     int ret;
@@ -103,7 +104,7 @@ static int gcm_encrypt(int devId, const byte* key, word32 keySz,
     }
     if (ret == 0) {
         ret = wc_AesGcmEncrypt(&aes, ct, pt, ptSz, g_iv, (word32)sizeof(g_iv),
-                               tag, tagSz, NULL, 0);
+                               tag, tagSz, aad, aadSz);
     }
     wc_AesFree(&aes);
     return ret;
@@ -111,7 +112,8 @@ static int gcm_encrypt(int devId, const byte* key, word32 keySz,
 
 /* AES-GCM decrypt-verify on a given devId. 0 on success (tag OK, PT recovered). */
 static int gcm_decrypt(int devId, const byte* key, word32 keySz,
-    byte* rt, const byte* ct, const byte* tag, word32 tagSz, word32 ptSz)
+    byte* rt, const byte* ct, const byte* tag, word32 tagSz, word32 ptSz,
+    const byte* aad, word32 aadSz)
 {
     Aes aes;
     int ret;
@@ -122,60 +124,110 @@ static int gcm_decrypt(int devId, const byte* key, word32 keySz,
     }
     if (ret == 0) {
         ret = wc_AesGcmDecrypt(&aes, rt, ct, ptSz, g_iv, (word32)sizeof(g_iv),
-                               tag, tagSz, NULL, 0);
+                               tag, tagSz, aad, aadSz);
     }
     wc_AesFree(&aes);
     return ret;
 }
 
-/* Test 1: plaintext device reproduces a published AES-GCM vector (proves the
- * key is the actual AES key, not a seed) and round-trips + rejects tamper. */
-static int plaintext_kat(void)
+/* McGrew GCM test case 4: same 128-bit key, 60-byte payload (partial trailing
+ * block -> exercises the NPBLB path) with 20-byte AAD (-> the header phase). */
+static const byte g_kat4_aad[20] = {
+    0xfe,0xed,0xfa,0xce,0xde,0xad,0xbe,0xef,
+    0xfe,0xed,0xfa,0xce,0xde,0xad,0xbe,0xef,
+    0xab,0xad,0xda,0xd2
+};
+static const byte g_kat4_pt[60] = {
+    0xd9,0x31,0x32,0x25,0xf8,0x84,0x06,0xe5,
+    0xa5,0x59,0x09,0xc5,0xaf,0xf5,0x26,0x9a,
+    0x86,0xa7,0xa9,0x53,0x15,0x34,0xf7,0xda,
+    0x2e,0x4c,0x30,0x3d,0x8a,0x31,0x8a,0x72,
+    0x1c,0x3c,0x0c,0x95,0x95,0x68,0x09,0x53,
+    0x2f,0xcf,0x0e,0x24,0x49,0xa6,0xb5,0x25,
+    0xb1,0x6a,0xed,0xf5,0xaa,0x0d,0xe6,0x57,
+    0xba,0x63,0x7b,0x39
+};
+static const byte g_kat4_ct[60] = {
+    0x42,0x83,0x1e,0xc2,0x21,0x77,0x74,0x24,
+    0x4b,0x72,0x21,0xb7,0x84,0xd0,0xd4,0x9c,
+    0xe3,0xaa,0x21,0x2f,0x2c,0x02,0xa4,0xe0,
+    0x35,0xc1,0x7e,0x23,0x29,0xac,0xa1,0x2e,
+    0x21,0xd5,0x14,0xb2,0x54,0x66,0x93,0x1c,
+    0x7d,0x8f,0x6a,0x5a,0xac,0x84,0xaa,0x05,
+    0x1b,0xa3,0x0b,0x39,0x6a,0x0a,0xac,0x97,
+    0x3d,0x58,0xe0,0x91
+};
+static const byte g_kat4_tag[16] = {
+    0x5b,0xc9,0x4f,0xbc,0x32,0x21,0xa5,0xdb,
+    0x94,0xfa,0xe9,0x5a,0xe7,0x12,0x1a,0x47
+};
+
+/* One plaintext-device KAT: encrypt -> match published CT/tag, decrypt ->
+ * recover PT, tamper -> reject. */
+static int plain_gcm_one(const char* name, const byte* pt, word32 ptSz,
+    const byte* aad, word32 aadSz, const byte* expCt, const byte* expTag)
 {
     byte ct[64];
     byte rt[64];
     byte tag[16];
     int  ret;
 
-    printf("[plaintext KAT] devId=%d (verbatim key)\n",
-           WOLFSSL_STM32_AES_DEVID);
+    printf("  [%s]\n", name);
     XMEMSET(ct, 0, sizeof(ct));
     XMEMSET(rt, 0, sizeof(rt));
     XMEMSET(tag, 0, sizeof(tag));
 
     ret = gcm_encrypt(WOLFSSL_STM32_AES_DEVID, g_kat_key,
-                      (word32)sizeof(g_kat_key), ct, tag, 16,
-                      g_kat_pt, (word32)sizeof(g_kat_pt));
+                      (word32)sizeof(g_kat_key), ct, tag, 16, pt, ptSz,
+                      aad, aadSz);
     if (ret != 0) {
-        printf("  encrypt failed: %d\n", ret);
+        printf("    encrypt failed: %d\n", ret);
         return ret;
     }
-    if (XMEMCMP(ct, g_kat_ct, sizeof(g_kat_ct)) != 0 ||
-            XMEMCMP(tag, g_kat_tag, sizeof(g_kat_tag)) != 0) {
-        printf("  CT/tag mismatch vs KAT -- FAIL\n");
+    if (XMEMCMP(ct, expCt, ptSz) != 0 || XMEMCMP(tag, expTag, 16) != 0) {
+        printf("    CT/tag mismatch vs KAT -- FAIL\n");
         return -1;
     }
-    printf("  CT + tag match published vector OK\n");
+    printf("    CT + tag match published vector OK\n");
 
     ret = gcm_decrypt(WOLFSSL_STM32_AES_DEVID, g_kat_key,
-                      (word32)sizeof(g_kat_key), rt, ct, tag, 16,
-                      (word32)sizeof(g_kat_pt));
-    if (ret != 0 || XMEMCMP(rt, g_kat_pt, sizeof(g_kat_pt)) != 0) {
-        printf("  round-trip failed (ret=%d) -- FAIL\n", ret);
+                      (word32)sizeof(g_kat_key), rt, ct, tag, 16, ptSz,
+                      aad, aadSz);
+    if (ret != 0 || XMEMCMP(rt, pt, ptSz) != 0) {
+        printf("    round-trip failed (ret=%d) -- FAIL\n", ret);
         return (ret != 0) ? ret : -1;
     }
-    printf("  decrypt recovered PT OK\n");
+    printf("    decrypt recovered PT OK\n");
 
     tag[0] ^= 0xffu;
     ret = gcm_decrypt(WOLFSSL_STM32_AES_DEVID, g_kat_key,
-                      (word32)sizeof(g_kat_key), rt, ct, tag, 16,
-                      (word32)sizeof(g_kat_pt));
+                      (word32)sizeof(g_kat_key), rt, ct, tag, 16, ptSz,
+                      aad, aadSz);
     if (ret != WC_NO_ERR_TRACE(AES_GCM_AUTH_E)) {
-        printf("  tamper NOT rejected (ret=%d) -- FAIL\n", ret);
+        printf("    tamper NOT rejected (ret=%d) -- FAIL\n", ret);
         return -1;
     }
-    printf("  tamper rejected (AES_GCM_AUTH_E) OK\n");
+    printf("    tamper rejected (AES_GCM_AUTH_E) OK\n");
     return 0;
+}
+
+/* Test 1: plaintext device reproduces published AES-GCM vectors (proves the key
+ * is the actual AES key, not a seed). TC3 is whole-block/no-AAD; TC4 has AAD and
+ * a partial trailing block (NPBLB + header phase). */
+static int plaintext_kat(void)
+{
+    int ret;
+
+    printf("[plaintext KAT] devId=%d (verbatim key)\n",
+           WOLFSSL_STM32_AES_DEVID);
+    ret = plain_gcm_one("TC3 whole-block/no-AAD", g_kat_pt,
+                        (word32)sizeof(g_kat_pt), NULL, 0, g_kat_ct, g_kat_tag);
+    if (ret != 0) {
+        return ret;
+    }
+    return plain_gcm_one("TC4 AAD+partial-tail", g_kat4_pt,
+                         (word32)sizeof(g_kat4_pt), g_kat4_aad,
+                         (word32)sizeof(g_kat4_aad), g_kat4_ct, g_kat4_tag);
 }
 
 /* Test 2: feed the same 32 bytes to both devices. Plaintext ciphertext must
@@ -201,13 +253,15 @@ static int coexist(void)
            WOLFSSL_STM32_AES_DEVID, WC_DHUK_DEVID);
 
     ret = gcm_encrypt(WOLFSSL_STM32_AES_DEVID, key32, (word32)sizeof(key32),
-                      ctPlain, tagPlain, 16, pt, (word32)sizeof(pt));
+                      ctPlain, tagPlain, 16, pt, (word32)sizeof(pt),
+                      NULL, 0);
     if (ret != 0) {
         printf("  plaintext encrypt failed: %d\n", ret);
         return ret;
     }
     ret = gcm_encrypt(WC_DHUK_DEVID, key32, (word32)sizeof(key32),
-                      ctDhuk, tagDhuk, 16, pt, (word32)sizeof(pt));
+                      ctDhuk, tagDhuk, 16, pt, (word32)sizeof(pt),
+                      NULL, 0);
     if (ret != 0) {
         printf("  DHUK encrypt failed: %d\n", ret);
         return ret;
@@ -220,13 +274,15 @@ static int coexist(void)
     printf("  plaintext CT != DHUK CT OK (distinct keys per devId)\n");
 
     ret = gcm_decrypt(WOLFSSL_STM32_AES_DEVID, key32, (word32)sizeof(key32),
-                      rt, ctPlain, tagPlain, 16, (word32)sizeof(pt));
+                      rt, ctPlain, tagPlain, 16, (word32)sizeof(pt),
+                      NULL, 0);
     if (ret != 0 || XMEMCMP(rt, pt, sizeof(pt)) != 0) {
         printf("  plaintext round-trip failed (ret=%d) -- FAIL\n", ret);
         return (ret != 0) ? ret : -1;
     }
     ret = gcm_decrypt(WC_DHUK_DEVID, key32, (word32)sizeof(key32),
-                      rt, ctDhuk, tagDhuk, 16, (word32)sizeof(pt));
+                      rt, ctDhuk, tagDhuk, 16, (word32)sizeof(pt),
+                      NULL, 0);
     if (ret != 0 || XMEMCMP(rt, pt, sizeof(pt)) != 0) {
         printf("  DHUK round-trip failed (ret=%d) -- FAIL\n", ret);
         return (ret != 0) ? ret : -1;
