@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -429,6 +429,15 @@ ifeq ($(TARGET),aesplain)
     $(error TARGET=aesplain requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
+endif
+# Direct HW AES-GCM (plaintext key) check -- calls wc_Stm32_Aes_Gcm() with no SW
+# fallback and verifies against a published whole-block vector. Confirms the bare
+# HW GCM engine (CRYP IP or TinyAES) does encrypt + decrypt-verify. Any board with
+# STM32 AES-GCM hardware (CRYP: f437/f439/f767/h7; TinyAES: u3/u5/u585/u545/...).
+ifeq ($(TARGET),plaingcm)
+  ifeq ($(filter $(BOARD),f437 f439 f767 h7 h7s3 u3 u5 u585 u545 l4a6 l552 l562 wba52 c562 c5a3 n657),)
+    $(error TARGET=plaingcm requires a board with STM32 AES-GCM HW)
+  endif
 endif
 # CubeMX AES crypto-callback test -- verifies WOLF_CRYPTO_CB_ONLY_AES works on
 # the HAL build. Registers wc_Stm32_CubeAesRegister (the new CubeMX AES device
