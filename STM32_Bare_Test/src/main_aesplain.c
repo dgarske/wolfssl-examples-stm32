@@ -10,11 +10,12 @@
  *   - the DHUK device (wc_Stm32_DhukRegister, WC_DHUK_DEVID) treats the key bytes
  *     as a 256-bit seed for the SAES/DHUK key ladder.
  *
- * Test 1 runs an AES-GCM known-answer test through the plaintext device
- * (McGrew & Viega GCM test case 3), proving the key is used verbatim. Test 2
- * feeds the SAME 32 key bytes to both devices: the plaintext ciphertext differs
- * from the DHUK (device-bound) ciphertext, and each device decrypts its own
- * output -- demonstrating run-time selection between the two by devId.
+ * Test 1 runs AES-GCM known-answer tests through the plaintext device (McGrew &
+ * Viega GCM cases 3 and 4 -- the latter with AAD and a partial trailing block),
+ * proving the key is used verbatim; encrypt and decrypt-verify both run on the
+ * AES-GCM hardware. Test 2 feeds the SAME 32 key bytes to both devices: the
+ * plaintext ciphertext differs from the DHUK (device-bound) ciphertext, and each
+ * device decrypts its own output -- demonstrating run-time selection by devId.
  *
  * Built with the STM32_BARE_CB_ONLY preset (WOLF_CRYPTO_CB_ONLY_AES): the
  * software AES core is stripped and every AES block routes through a device;
