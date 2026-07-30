@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -234,6 +234,8 @@ endif
 # the same device key, which pins the GenerateM0() wiring in Stm32Dhuk_Gmac.
 ifeq ($(GCM),small)
   GCM_DEFS := -DSTM32_BARE_GCM_SMALL
+else ifeq ($(GCM),table)
+  GCM_DEFS := -DSTM32_BARE_GCM_TABLE
 else
   GCM_DEFS :=
 endif
@@ -429,24 +431,46 @@ ifeq ($(TARGET),aesplain)
     $(error TARGET=aesplain requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
+  # SECURE=1: same TZEN=1 secure-state build as dhuk / ccb / cbonly (see the
+  # comment in the dhuk block above). The DHUK half of the coexistence check is
+  # the path that needs secure state on a TZEN=1 part (e.g. the B-U585I-IOT02A).
+  ifeq ($(SECURE),1)
+    COMMON_DEFS += -mcmse
+    LDFLAGS     += -mcmse
+  endif
 endif
 # Direct HW AES-GCM (plaintext key) check -- calls wc_Stm32_Aes_Gcm() with no SW
 # fallback and verifies against a published whole-block vector. Confirms the bare
-# HW GCM engine (CRYP IP or TinyAES) does encrypt + decrypt-verify. Any board with
-# STM32 AES-GCM hardware (CRYP: f437/f439/f767/h7; TinyAES: u3/u5/u585/u545/...).
+# HW GCM engine does encrypt + decrypt-verify. Needs a board whose silicon carries
+# an AES IP with a HW GCM mode: the CRYP IP on f437/f439/h7, or the TinyAES IP
+# (routed to SAES on h7s3/n657) with AES_CR_GCMPH on h7s3/u3/u585/u545/l4a6/
+# l562/wba52/n657.
+# Excluded on purpose: u5 (U575), f767 (F767ZI) and l552 (L552ZE) have no AES IP
+# at all (NO_STM32_CRYPTO in user_settings.h). c5a3/c562 do have the IP, but the
+# STM32C5 CMSIS names the GCM phase field AES_CR_CPHASE instead of AES_CR_GCMPH,
+# and wolfSSL only abstracts that rename (WC_STM32_AES_CR_PHASE) on the DHUK/SAES
+# path -- the plaintext-key wc_Stm32_Aes_Gcm() compiles to the
+# CRYPTOCB_UNAVAILABLE stub there. Use TARGET=aesplain on C5 instead.
 ifeq ($(TARGET),plaingcm)
-  ifeq ($(filter $(BOARD),f437 f439 f767 h7 h7s3 u3 u5 u585 u545 l4a6 l552 l562 wba52 c562 c5a3 n657),)
-    $(error TARGET=plaingcm requires a board with STM32 AES-GCM HW)
+  ifeq ($(filter $(BOARD),f437 f439 h7 h7s3 u3 u585 u545 l4a6 l562 wba52 n657),)
+    $(error TARGET=plaingcm requires a board with STM32 AES-GCM HW: f437 f439 h7 h7s3 u3 u585 u545 l4a6 l562 wba52 n657)
   endif
 endif
 # CubeMX AES crypto-callback test -- verifies WOLF_CRYPTO_CB_ONLY_AES works on
-# the HAL build. Registers wc_Stm32_CubeAesRegister (the new CubeMX AES device
+# the HAL build. Registers wc_Stm32_AesRegister (the new CubeMX AES device
 # in wolfcrypt/src/port/st/stm32.c) and runs AES-GCM KATs with a plaintext key:
 # the device's AES-ECB handler keys GCM, then bulk GCM runs on the native HAL
 # engine. Requires BUILD=cubemx (HAL crypto driver) and BOARD=u3 (NUCLEO-U385RG-Q).
 ifeq ($(TARGET),cubeaes)
   ifneq ($(BUILD),cubemx)
     $(error TARGET=cubeaes requires BUILD=cubemx)
+  endif
+  # CONFIG=bare is what defines WOLFSSL_STM32_CUBEMX (see user_settings.h), which
+  # in turn pulls the family HAL header the app needs. Without it the app drops to
+  # its "not enabled" arm and wolfssl raises its own #error, so gate it here to
+  # give a clear message instead.
+  ifneq ($(CONFIG),bare)
+    $(error TARGET=cubeaes requires CONFIG=bare)
   endif
   ifeq ($(filter $(BOARD),u3),)
     $(error TARGET=cubeaes requires BOARD=u3 (NUCLEO-U385RG-Q))
@@ -460,6 +484,11 @@ endif
 ifeq ($(TARGET),cubecrypto)
   ifneq ($(BUILD),cubemx)
     $(error TARGET=cubecrypto requires BUILD=cubemx)
+  endif
+  # As for cubeaes: CONFIG=bare is what defines WOLFSSL_STM32_CUBEMX, which the
+  # ST HAL PKA handle (PKA_HandleTypeDef hpka) in main_cubecrypto.c depends on.
+  ifneq ($(CONFIG),bare)
+    $(error TARGET=cubecrypto requires CONFIG=bare)
   endif
   ifeq ($(filter $(BOARD),u3),)
     $(error TARGET=cubecrypto requires BOARD=u3 (NUCLEO-U385RG-Q))

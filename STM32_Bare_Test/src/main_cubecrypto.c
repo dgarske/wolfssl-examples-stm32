@@ -11,9 +11,12 @@
  *       sign (CCB), verify with its public key (PKA).
  *   [3] HW AES-GCM (plaintext key) -> HAL AES via the CubeMX AES device.
  *
- * The application owns the ST HAL PKA: it defines the global PKA_HandleTypeDef
- * hpka (wolfSSL references it as extern on the HAL build) and calls
- * HAL_PKA_Init after enabling the PKA clock.
+ * The ST HAL PKA handle (PKA_HandleTypeDef hpka) that wolfSSL references as
+ * extern on the HAL build is defined by the board file
+ * (boards/u3/hw_init_cubemx.c); a CubeMX-generated project gets it from
+ * MX_PKA_Init. This app only declares it extern, enables the PKA clock and
+ * calls HAL_PKA_Init on it -- do not add another definition or you will get a
+ * duplicate-symbol link error.
  *
  *   make BOARD=u3 BUILD=cubemx TARGET=cubecrypto CONFIG=bare flash
  */
@@ -35,15 +38,19 @@ extern void     SystemCoreClockUpdate(void);
 #include "wolfssl/wolfcrypt/aes.h"
 #include "wolfssl/wolfcrypt/port/st/stm32.h"
 
+/* McGrew & Viega GCM test case 3 (needs `byte` from types.h above). */
+#include "gcm_vectors.h"
+
 #ifndef BUILD_CONFIG_NAME
 #define BUILD_CONFIG_NAME "unknown"
 #endif
 
 #define CUBE_DEVID WC_DHUK_DEVID
 
-/* The board's hw_init_cubemx.c defines the ST HAL PKA handle (hpka, Instance=PKA)
- * that wolfSSL references as extern; we enable its clock and init it below. */
-extern PKA_HandleTypeDef hpka;
+/* Non-zero, non-error result code meaning "this step could not run here", so a
+ * gated step is distinguishable from a real PASS (0) and from a wolfCrypt error
+ * (always negative). It does not fail the overall run. */
+#define CCB_RC_SKIPPED 1
 
 volatile struct {
     uint32_t magic;
@@ -51,17 +58,25 @@ volatile struct {
     int32_t  ccb_rc;
     int32_t  gcm_rc;
     int32_t  overall;
-} g_res;
+} g_cubecrypto_res;
 
 #if defined(WOLFSSL_STM32_CUBEMX) && defined(WOLF_CRYPTO_CB)
 
-/* A backend gated off on this silicon/state returns one of these; treat CCB as
- * an expected soft-PASS in that case (it needs provisioning/secure context). */
+#ifdef WOLFSSL_STM32_PKA
+/* The board's hw_init_cubemx.c defines the ST HAL PKA handle (hpka, Instance=PKA)
+ * that wolfSSL references as extern; we enable its clock and init it below. The
+ * PKA_HandleTypeDef type only resolves once WOLFSSL_STM32_CUBEMX has pulled in
+ * the family HAL header, so this declaration stays inside that guard. */
+extern PKA_HandleTypeDef hpka;
+#endif
+
+/* A backend that cannot run at all in this build/state returns one of these --
+ * the step is reported SKIPPED rather than PASS. Deliberately excludes
+ * WC_TIMEOUT_E / WC_HW_E: those mean the hardware was reached and misbehaved,
+ * which must surface as a failure. */
 static int is_expected_gated(int ret)
 {
     return (ret == WC_NO_ERR_TRACE(CRYPTOCB_UNAVAILABLE)) ||
-           (ret == WC_NO_ERR_TRACE(WC_TIMEOUT_E)) ||
-           (ret == WC_NO_ERR_TRACE(WC_HW_E)) ||
            (ret == WC_NO_ERR_TRACE(NO_VALID_DEVID)) ||
            (ret == WC_NO_ERR_TRACE(NOT_COMPILED_IN));
 }
@@ -160,7 +175,9 @@ done:
 #ifdef WOLFSSL_STM32_CCB
 /* [2] CCB-protected HW ECDSA: provision a P-256 key on-chip (the callback
  * intercepts wc_ecc_make_key), sign through it (CCB), verify with the public
- * key (PKA). The private scalar never enters software. */
+ * key (PKA). The private scalar never enters software. Returns 0 on a real
+ * pass, CCB_RC_SKIPPED if the path cannot run in this build, negative on a
+ * genuine failure. */
 static int test_ecdsa_ccb(WC_RNG* rng)
 {
     ecc_key key;
@@ -180,14 +197,15 @@ static int test_ecdsa_ccb(WC_RNG* rng)
     /* On-chip provisioning derives a random scalar via software ECC, which
      * WOLF_CRYPTO_CB_ONLY_ECC strips -- so keygen returns NO_VALID_DEVID here.
      * CCB sign works via the callback with a pre-provisioned blob (provision it
-     * in a non-CB_ONLY_ECC build). Reported as a soft PASS. */
+     * in a non-CB_ONLY_ECC build). Reported SKIPPED, not PASS: the CCB sign
+     * path below is never reached in this build. */
     ret = wc_ecc_make_key(rng, 32, &key);
     if (is_expected_gated(ret)) {
         printf("  CCB keygen needs SW ECC (stripped by CB_ONLY_ECC), ret=%d\n",
                ret);
         printf("  -- provision the CCB blob in a non-stripped build; CCB sign\n");
-        printf("     then runs via the callback. Soft PASS\n");
-        ret = 0;
+        printf("     then runs via the callback. SKIPPED (not a PASS)\n");
+        ret = CCB_RC_SKIPPED;
         goto done;
     }
     if (ret != 0) {
@@ -198,8 +216,8 @@ static int test_ecdsa_ccb(WC_RNG* rng)
     ret = wc_ecc_sign_hash(P256_HASH, (word32)sizeof(P256_HASH),
                            sig, &sigLen, rng, &key);
     if (is_expected_gated(ret)) {
-        printf("  CCB sign gated (ret=%d) -- soft PASS\n", ret);
-        ret = 0;
+        printf("  CCB sign gated (ret=%d) -- SKIPPED (not a PASS)\n", ret);
+        ret = CCB_RC_SKIPPED;
         goto done;
     }
     if (ret != 0) {
@@ -234,28 +252,6 @@ done:
  * (64-byte payload, no AAD). */
 static int test_aesgcm(void)
 {
-    static const byte key[16] = {
-        0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,
-        0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
-    };
-    static const byte iv[12] = {
-        0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,0xde,0xca,0xf8,0x88
-    };
-    static const byte pt[64] = {
-        0xd9,0x31,0x32,0x25,0xf8,0x84,0x06,0xe5,0xa5,0x59,0x09,0xc5,0xaf,0xf5,0x26,0x9a,
-        0x86,0xa7,0xa9,0x53,0x15,0x34,0xf7,0xda,0x2e,0x4c,0x30,0x3d,0x8a,0x31,0x8a,0x72,
-        0x1c,0x3c,0x0c,0x95,0x95,0x68,0x09,0x53,0x2f,0xcf,0x0e,0x24,0x49,0xa6,0xb5,0x25,
-        0xb1,0x6a,0xed,0xf5,0xaa,0x0d,0xe6,0x57,0xba,0x63,0x7b,0x39,0x1a,0xaf,0xd2,0x55
-    };
-    static const byte expCt[64] = {
-        0x42,0x83,0x1e,0xc2,0x21,0x77,0x74,0x24,0x4b,0x72,0x21,0xb7,0x84,0xd0,0xd4,0x9c,
-        0xe3,0xaa,0x21,0x2f,0x2c,0x02,0xa4,0xe0,0x35,0xc1,0x7e,0x23,0x29,0xac,0xa1,0x2e,
-        0x21,0xd5,0x14,0xb2,0x54,0x66,0x93,0x1c,0x7d,0x8f,0x6a,0x5a,0xac,0x84,0xaa,0x05,
-        0x1b,0xa3,0x0b,0x39,0x6a,0x0a,0xac,0x97,0x3d,0x58,0xe0,0x91,0x47,0x3f,0x59,0x85
-    };
-    static const byte expTag[16] = {
-        0x4d,0x5c,0x2a,0xf3,0x27,0xcd,0x64,0xa6,0x2c,0xf3,0x5a,0xbd,0x2b,0xa6,0xfa,0xb4
-    };
     Aes    aes;
     byte   ct[64];
     byte   rt[64];
@@ -268,11 +264,11 @@ static int test_aesgcm(void)
 
     ret = wc_AesInit(&aes, NULL, CUBE_DEVID);
     if (ret == 0) {
-        ret = wc_AesGcmSetKey(&aes, key, (word32)sizeof(key));
+        ret = wc_AesGcmSetKey(&aes, gcm_tc_key, (word32)sizeof(gcm_tc_key));
     }
     if (ret == 0) {
-        ret = wc_AesGcmEncrypt(&aes, ct, pt, (word32)sizeof(pt),
-                               iv, (word32)sizeof(iv),
+        ret = wc_AesGcmEncrypt(&aes, ct, gcm_tc3_pt, (word32)sizeof(gcm_tc3_pt),
+                               gcm_tc_iv, (word32)sizeof(gcm_tc_iv),
                                tag, (word32)sizeof(tag), NULL, 0);
     }
     wc_AesFree(&aes);
@@ -280,23 +276,23 @@ static int test_aesgcm(void)
         printf("  AES-GCM encrypt failed: %d\n", ret);
         return ret;
     }
-    if (XMEMCMP(ct, expCt, sizeof(ct)) != 0 ||
-            XMEMCMP(tag, expTag, sizeof(tag)) != 0) {
+    if (XMEMCMP(ct, gcm_tc3_ct, sizeof(ct)) != 0 ||
+            XMEMCMP(tag, gcm_tc3_tag, sizeof(tag)) != 0) {
         printf("  AES-GCM CT/tag mismatch vs KAT -- FAIL\n");
         return -1;
     }
 
     ret = wc_AesInit(&aes, NULL, CUBE_DEVID);
     if (ret == 0) {
-        ret = wc_AesGcmSetKey(&aes, key, (word32)sizeof(key));
+        ret = wc_AesGcmSetKey(&aes, gcm_tc_key, (word32)sizeof(gcm_tc_key));
     }
     if (ret == 0) {
         ret = wc_AesGcmDecrypt(&aes, rt, ct, (word32)sizeof(ct),
-                               iv, (word32)sizeof(iv),
+                               gcm_tc_iv, (word32)sizeof(gcm_tc_iv),
                                tag, (word32)sizeof(tag), NULL, 0);
     }
     wc_AesFree(&aes);
-    if (ret != 0 || XMEMCMP(rt, pt, sizeof(pt)) != 0) {
+    if (ret != 0 || XMEMCMP(rt, gcm_tc3_pt, sizeof(gcm_tc3_pt)) != 0) {
         printf("  AES-GCM decrypt/round-trip FAILED (ret=%d)\n", ret);
         return (ret == 0) ? -1 : ret;
     }
@@ -360,19 +356,21 @@ int main(void)
 #if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
                 printf("[1] HW ECDSA (normal key -> PKA) sign + verify:\n");
                 rc = test_ecdsa_normal(&rng);
-                g_res.ecdsa_rc = rc;
+                g_cubecrypto_res.ecdsa_rc = rc;
                 if (rc != 0 && ret == 0) ret = rc;
 #ifdef WOLFSSL_STM32_CCB
                 printf("\n[2] HW CCB-protected ECDSA sign + verify:\n");
                 rc = test_ecdsa_ccb(&rng);
-                g_res.ccb_rc = rc;
-                if (rc != 0 && ret == 0) ret = rc;
+                g_cubecrypto_res.ccb_rc = rc;
+                /* CCB_RC_SKIPPED (positive) is not a failure; only a wolfCrypt
+                 * error (negative) fails the run. */
+                if (rc < 0 && ret == 0) ret = rc;
 #endif
 #endif
 #ifdef HAVE_AESGCM
                 printf("\n[3] HW AES-GCM (plaintext key -> HAL):\n");
                 rc = test_aesgcm();
-                g_res.gcm_rc = rc;
+                g_cubecrypto_res.gcm_rc = rc;
                 if (rc != 0 && ret == 0) ret = rc;
 #endif
                 wc_FreeRng(&rng);
@@ -386,8 +384,8 @@ int main(void)
     ret = -1;
 #endif
 
-    g_res.overall = ret;
-    g_res.magic   = 0xCBCC0001u;
+    g_cubecrypto_res.overall = ret;
+    g_cubecrypto_res.magic   = 0xCBCC0001u;
     wolfCrypt_Cleanup();
     printf("\nResult: %d (%s)\n", ret, ret == 0 ? "PASS" : "FAIL");
     printf("Test complete\n");

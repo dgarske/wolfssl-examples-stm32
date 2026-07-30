@@ -667,6 +667,9 @@ extern "C" {
 #if defined(STM32_BARE_GCM_SMALL)
     #undef  GCM_TABLE_4BIT
     #define GCM_SMALL
+#elif defined(STM32_BARE_GCM_TABLE)
+    #undef  GCM_TABLE_4BIT
+    #define GCM_TABLE
 #else
     #define GCM_TABLE_4BIT
 #endif
@@ -887,7 +890,7 @@ extern "C" {
 /* CubeMX AES crypto-callback test (Makefile TARGET=cubeaes ->
  * -DSTM32_CUBE_AES_ONLY). Turns on WOLF_CRYPTO_CB_ONLY_AES so the software AES
  * core is stripped and every AES op routes through the crypto callback -- the
- * new CubeMX AES device (wc_Stm32_CubeAesRegister). main_cubeaes.c registers it
+ * new CubeMX AES device (wc_Stm32_AesRegister). main_cubeaes.c registers it
  * and runs AES-GCM KATs on the HAL. Only AES is exercised; the rest of the
  * common config (ECC/SHA/etc.) stays as software but is unused here. */
 #ifdef STM32_CUBE_AES_ONLY
@@ -900,7 +903,14 @@ extern "C" {
  * ECDSA, and HAL AES. This is the customer's config shape; main_cubecrypto.c
  * brings up the ST HAL PKA (hpka + HAL_PKA_Init) that the PKA path needs. */
 #ifdef STM32_CUBE_CRYPTO_ONLY
-    #define WOLF_CRYPTO_CB_ONLY_ECC
+    /* Callback-only ECC only on full-PKA parts, matching STM32_BARE_CB_ONLY
+     * above. The C5 PKA is sign-only (WC_STM32_PKA_SIGN_ONLY) with no HW ECDSA
+     * verify, so stripping software ECC there would leave verify with no
+     * implementation. Latent today (the Makefile pins cubecrypto to BOARD=u3)
+     * but keeps the two presets consistent as boards are added. */
+    #ifndef WOLFSSL_STM32C5
+        #define WOLF_CRYPTO_CB_ONLY_ECC
+    #endif
     #define WOLF_CRYPTO_CB_ONLY_AES
 #endif
 

@@ -3,11 +3,19 @@
  * Copyright (C) 2026 wolfSSL Inc.
  *
  * Direct hardware AES-GCM check for the bare-metal STM32 AES engine with a
- * plaintext key -- validates encrypt AND decrypt-verify on the HW GCM path
- * (CRYP IP on F2/F4/F7/H7; TinyAES GCM on U3/U5/H5/...). It calls
- * wc_Stm32_Aes_Gcm() directly, so there is NO software fallback: if the return
- * is 0 and the output matches the published McGrew & Viega GCM test-case-3
- * vector (whole-block, 12-byte IV), the hardware GCM engine produced it.
+ * plaintext key -- validates encrypt AND decrypt-verify on the HW GCM path. It
+ * calls wc_Stm32_Aes_Gcm() directly, so there is NO software fallback: if the
+ * return is 0 and the output matches the published McGrew & Viega GCM
+ * test-case-3 vector (whole-block, 12-byte IV), the hardware GCM engine
+ * produced it.
+ *
+ * Boards whose silicon carries an AES IP with a HW GCM mode (the Makefile
+ * enforces the same list): CRYP IP on f437 / f439 / h7; TinyAES (routed to SAES
+ * on h7s3 / n657) on h7s3 / u3 / u585 / u545 / l4a6 / l562 / wba52 / n657.
+ * Not c5a3 / c562: the STM32C5 CMSIS names the GCM phase field AES_CR_CPHASE
+ * rather than AES_CR_GCMPH, and wolfSSL only abstracts that rename on the
+ * DHUK/SAES path, so the plaintext-key wc_Stm32_Aes_Gcm() is the
+ * CRYPTOCB_UNAVAILABLE stub there. Use TARGET=aesplain on C5 instead.
  *
  *   make BOARD=f439 CONFIG=bare TARGET=plaingcm flash
  *   make BOARD=u3   CONFIG=bare TARGET=plaingcm flash
@@ -28,6 +36,9 @@ extern void     SystemCoreClockUpdate(void);
 #include "wolfssl/wolfcrypt/aes.h"
 #include "wolfssl/wolfcrypt/port/st/stm32.h"
 
+/* McGrew & Viega GCM test case 3 (needs `byte` from types.h above). */
+#include "gcm_vectors.h"
+
 #ifndef BUILD_CONFIG_NAME
 #define BUILD_CONFIG_NAME "unknown"
 #endif
@@ -38,39 +49,6 @@ volatile struct {
 } g_plaingcm_res;
 
 #if defined(WOLFSSL_STM32_BARE) && defined(STM32_CRYPTO) && defined(HAVE_AESGCM)
-
-/* McGrew GCM test case 3: 128-bit key, 64-byte payload (whole blocks), no AAD. */
-static const byte g_key[16] = {
-    0xfe,0xff,0xe9,0x92,0x86,0x65,0x73,0x1c,
-    0x6d,0x6a,0x8f,0x94,0x67,0x30,0x83,0x08
-};
-static const byte g_iv[12] = {
-    0xca,0xfe,0xba,0xbe,0xfa,0xce,0xdb,0xad,0xde,0xca,0xf8,0x88
-};
-static const byte g_pt[64] = {
-    0xd9,0x31,0x32,0x25,0xf8,0x84,0x06,0xe5,
-    0xa5,0x59,0x09,0xc5,0xaf,0xf5,0x26,0x9a,
-    0x86,0xa7,0xa9,0x53,0x15,0x34,0xf7,0xda,
-    0x2e,0x4c,0x30,0x3d,0x8a,0x31,0x8a,0x72,
-    0x1c,0x3c,0x0c,0x95,0x95,0x68,0x09,0x53,
-    0x2f,0xcf,0x0e,0x24,0x49,0xa6,0xb5,0x25,
-    0xb1,0x6a,0xed,0xf5,0xaa,0x0d,0xe6,0x57,
-    0xba,0x63,0x7b,0x39,0x1a,0xaf,0xd2,0x55
-};
-static const byte g_ct[64] = {
-    0x42,0x83,0x1e,0xc2,0x21,0x77,0x74,0x24,
-    0x4b,0x72,0x21,0xb7,0x84,0xd0,0xd4,0x9c,
-    0xe3,0xaa,0x21,0x2f,0x2c,0x02,0xa4,0xe0,
-    0x35,0xc1,0x7e,0x23,0x29,0xac,0xa1,0x2e,
-    0x21,0xd5,0x14,0xb2,0x54,0x66,0x93,0x1c,
-    0x7d,0x8f,0x6a,0x5a,0xac,0x84,0xaa,0x05,
-    0x1b,0xa3,0x0b,0x39,0x6a,0x0a,0xac,0x97,
-    0x3d,0x58,0xe0,0x91,0x47,0x3f,0x59,0x85
-};
-static const byte g_tag[16] = {
-    0x4d,0x5c,0x2a,0xf3,0x27,0xcd,0x64,0xa6,
-    0x2c,0xf3,0x5a,0xbd,0x2b,0xa6,0xfa,0xb4
-};
 
 static int hw_gcm_kat(void)
 {
@@ -89,7 +67,7 @@ static int hw_gcm_kat(void)
         printf("  wc_AesInit failed: %d\n", ret);
         return ret;
     }
-    ret = wc_AesGcmSetKey(&aes, g_key, (word32)sizeof(g_key));
+    ret = wc_AesGcmSetKey(&aes, gcm_tc_key, (word32)sizeof(gcm_tc_key));
     if (ret != 0) {
         printf("  wc_AesGcmSetKey failed: %d\n", ret);
         wc_AesFree(&aes);
@@ -98,8 +76,9 @@ static int hw_gcm_kat(void)
 
     /* Direct HW encrypt (no SW fallback). UNAVAILABLE would mean the HW path
      * declined -- treated here as a failure so we never silently pass on SW. */
-    ret = wc_Stm32_Aes_Gcm(&aes, ct, g_pt, (word32)sizeof(g_pt),
-                           g_iv, (word32)sizeof(g_iv), tag, (word32)sizeof(tag),
+    ret = wc_Stm32_Aes_Gcm(&aes, ct, gcm_tc3_pt, (word32)sizeof(gcm_tc3_pt),
+                           gcm_tc_iv, (word32)sizeof(gcm_tc_iv),
+                           tag, (word32)sizeof(tag),
                            NULL, 0, 1 /* enc */);
     if (ret != 0) {
         printf("  HW encrypt returned %d (0 expected; not on HW?) -- FAIL\n",
@@ -107,8 +86,8 @@ static int hw_gcm_kat(void)
         wc_AesFree(&aes);
         return ret ? ret : -1;
     }
-    if (XMEMCMP(ct, g_ct, sizeof(g_ct)) != 0 ||
-            XMEMCMP(tag, g_tag, sizeof(g_tag)) != 0) {
+    if (XMEMCMP(ct, gcm_tc3_ct, sizeof(gcm_tc3_ct)) != 0 ||
+            XMEMCMP(tag, gcm_tc3_tag, sizeof(gcm_tc3_tag)) != 0) {
         printf("  HW CT/tag mismatch vs KAT -- FAIL\n");
         wc_AesFree(&aes);
         return -1;
@@ -117,9 +96,10 @@ static int hw_gcm_kat(void)
 
     /* Direct HW decrypt-verify. */
     ret = wc_Stm32_Aes_Gcm(&aes, rt, ct, (word32)sizeof(ct),
-                           g_iv, (word32)sizeof(g_iv), tag, (word32)sizeof(tag),
+                           gcm_tc_iv, (word32)sizeof(gcm_tc_iv),
+                           tag, (word32)sizeof(tag),
                            NULL, 0, 0 /* dec */);
-    if (ret != 0 || XMEMCMP(rt, g_pt, sizeof(g_pt)) != 0) {
+    if (ret != 0 || XMEMCMP(rt, gcm_tc3_pt, sizeof(gcm_tc3_pt)) != 0) {
         printf("  HW decrypt failed (ret=%d) -- FAIL\n", ret);
         wc_AesFree(&aes);
         return ret ? ret : -1;
@@ -129,7 +109,8 @@ static int hw_gcm_kat(void)
     /* Tamper the tag: HW decrypt must reject with AES_GCM_AUTH_E. */
     tag[0] ^= 0xffu;
     ret = wc_Stm32_Aes_Gcm(&aes, rt, ct, (word32)sizeof(ct),
-                           g_iv, (word32)sizeof(g_iv), tag, (word32)sizeof(tag),
+                           gcm_tc_iv, (word32)sizeof(gcm_tc_iv),
+                           tag, (word32)sizeof(tag),
                            NULL, 0, 0 /* dec */);
     wc_AesFree(&aes);
     if (ret != WC_NO_ERR_TRACE(AES_GCM_AUTH_E)) {
