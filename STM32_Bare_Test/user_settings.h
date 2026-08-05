@@ -690,6 +690,15 @@ extern "C" {
 /* HMAC / KDF */
 #define HAVE_HKDF
 
+/* SRAM PUF regression (TARGET=puf). Synthetic-SRAM test mode so it
+ * runs on any board without a board-specific NOLOAD section. HKDF is
+ * already enabled above. WC_PUF_BCH_T / WC_PUF_NUM_CODEWORDS come from
+ * the build command (PUF_T / PUF_CW). */
+#ifdef STM32_BARE_PUF
+    #define WOLFSSL_PUF
+    #define WOLFSSL_PUF_TEST
+#endif
+
 /* ChaCha20-Poly1305 */
 #define HAVE_CHACHA
 #define HAVE_POLY1305

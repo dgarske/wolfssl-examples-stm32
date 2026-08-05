@@ -179,6 +179,7 @@ has nothing to accelerate.
 | `ccb`  | `src/main_ccb.c`  | Transparent CCB-protected ECDSA (P-256) via `wc_ecc_sign_hash` -- bare + CubeMX. |
 | `ccbhal`| `src/main_ccbhal.c`| CubeMX `HAL_CCB_*` reference flow (provision + sign + SW-verify), `u3` only. |
 | `cbonly`| `src/main_cbonly.c`| Callback-only: ECDSA, full-payload AES-GCM, HMAC-SHA256, TRNG all on hardware, with the `STM32_BARE_CB_ONLY` software-strip preset. |
+| `puf` | `src/main_puf.c` | Configurable SRAM PUF (BCH(127,k,t) fuzzy extractor + HKDF) enroll/reconstruct regression in synthetic-SRAM mode. `PUF_T` selects the BCH profile (7/10/13/15), `PUF_CW` the codeword count. |
 
 `TARGET=dhuk` is limited to the SAES + PKA + DHUK boards (`u3`, `u585`, `u545`) and adds `-DWOLFSSL_DHUK -DWOLF_CRYPTO_CB`, which enable the STM32 DHUK crypto-callback device (in `wolfcrypt/src/port/st/stm32.c`). An application registers the device once (`wc_Stm32_DhukRegister(WC_DHUK_DEVID)`), inits a normal `Aes` / `ecc_key` with `devId = WC_DHUK_DEVID`, supplies the 256-bit seed as the key (`wc_AesGcmSetKey` / `wc_AesSetKey`) or via `wc_ecc_import_wrapped_private`, then performs NORMAL wolfCrypt calls -- the device-bound key is derived inside SAES and never appears in software. `main_dhuk.c`:
 
@@ -297,6 +298,31 @@ Result: 0 (PASS)
 ```
 
 The AES-GCM leg validates enc/dec with a nonzero payload round-trip plus tamper rejection -- the right correctness bar for a device-bound key, whose value is never known so a fixed KAT cannot apply. Dropping the software crypto shrinks flash measurably: `parse_size.py` reports `cbonly` vs the full-software `dhuk` build at 9.7 KB saved on `u3` (12.3%), 11.8 KB on `u585` (15.0%), and 15.0 KB on `c5a3` (17.0%).
+
+### SRAM PUF regression (`TARGET=puf`)
+
+`TARGET=puf` builds `src/main_puf.c`, exercising the configurable wolfCrypt SRAM PUF (a BCH(127,k,t) fuzzy extractor with HKDF key derivation) end to end on real silicon in synthetic-SRAM mode (`WOLFSSL_PUF_TEST`), so it runs on any board with no board-specific NOLOAD section. Each run enrolls, reconstructs cleanly (identity and derived key must match), reconstructs at the `t`-bit correction limit (`t` flips per 128-bit block, must still match), and checks an over-limit `t+1`-flip case that must fail or produce a different identity rather than silently reproduce the enrolled key. It prints per-step PASS lines then `Result: 0 (PASS)` and `Test complete`. For the real power-on SRAM physical PUF, use the H5-specific `wolfssl-examples/puf` project instead.
+
+This target uses `wc_PufGetProfileId()`, `wc_PufGetHelperData()` and `wc_PufReconstructEx()`, so it needs a wolfSSL with the configurable-PUF work; it will not build against 5.9.2. Step `[0]` cross-checks the library's profile id against the application's, which is what catches a partial rebuild that mixes objects from two different profiles (the sizes of `wc_PufCtx` disagree and the context overruns memory), and step `[5]` confirms helper data from a foreign profile is refused rather than decoded into a silently wrong key.
+
+Two knobs select the variation, gated via `-DSTM32_BARE_PUF` (which enables `WOLFSSL_PUF` + `WOLFSSL_PUF_TEST` in `user_settings.h`; HKDF is already on): `PUF_T=<7|10|13|15>` picks the BCH profile (`-DWC_PUF_BCH_T`, default 10) and `PUF_CW=<n>` picks `WC_PUF_NUM_CODEWORDS` (default 16). Because `make` does not track CFLAGS changes, give each profile its own `BUILD_DIR` (or `make clean` between profiles) or the build silently reuses stale wrong-profile objects.
+
+```
+make BOARD=h5   CONFIG=bare TARGET=puf            flash   # default t=10
+make BOARD=h5   CONFIG=bare TARGET=puf PUF_T=13   flash
+make BOARD=f767 CONFIG=bare TARGET=puf PUF_T=7    flash
+```
+
+Validated on real silicon:
+
+| Board | Core | Variation | Result |
+|-------|------|-----------|--------|
+| NUCLEO-H563ZI | Cortex-M33 | t=7 / 10 / 13 / 15 | PASS |
+| NUCLEO-H563ZI | Cortex-M33 | t=10, cw=8 / cw=32 | PASS |
+| NUCLEO-G071RB | Cortex-M0+ | t=10 | PASS |
+| NUCLEO-F439ZI | Cortex-M4F | t=10, t=13 | PASS |
+| NUCLEO-F767ZI | Cortex-M7 | t=10, t=7 | PASS |
+| B-U585I-IOT02A | Cortex-M33 (TrustZone) | t=10 | PASS |
 
 ### Orthogonal axes
 
