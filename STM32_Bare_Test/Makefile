@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -238,7 +238,29 @@ else
   GCM_DEFS :=
 endif
 
-COMMON_DEFS := -DWOLFSSL_USER_SETTINGS $(CPU_DEFS) $(VARIANT_DEFS) $(BUILD_DEFS) $(PQC_DEFS) $(STACK_DEFS) $(GCM_DEFS)
+# PUF axis: TARGET=puf builds the SRAM PUF regression (src/main_puf.c),
+# gating WOLFSSL_PUF + WOLFSSL_PUF_TEST in user_settings.h. PUF_T selects
+# the BCH profile (7|10|13|15); PUF_CW selects WC_PUF_NUM_CODEWORDS.
+ifeq ($(TARGET),puf)
+  PUF_DEFS := -DSTM32_BARE_PUF
+  ifneq ($(PUF_T),)
+    ifeq ($(filter $(PUF_T),7 10 13 15),)
+      $(error PUF_T must be one of 7, 10, 13, 15)
+    endif
+    PUF_DEFS += -DWC_PUF_BCH_T=$(PUF_T)
+  endif
+  ifneq ($(PUF_CW),)
+    PUF_DEFS += -DWC_PUF_NUM_CODEWORDS=$(PUF_CW)
+  endif
+  # PUF_COMPACT=1 selects the opt-in parity-only helper layout.
+  ifeq ($(PUF_COMPACT),1)
+    PUF_DEFS += -DWC_PUF_HELPER_COMPACT
+  endif
+else
+  PUF_DEFS :=
+endif
+
+COMMON_DEFS := -DWOLFSSL_USER_SETTINGS $(CPU_DEFS) $(VARIANT_DEFS) $(BUILD_DEFS) $(PQC_DEFS) $(STACK_DEFS) $(GCM_DEFS) $(PUF_DEFS)
 
 CFLAGS    = $(MCU_FLAGS) $(INCLUDES) $(COMMON_DEFS) \
             -O2 -fomit-frame-pointer \
