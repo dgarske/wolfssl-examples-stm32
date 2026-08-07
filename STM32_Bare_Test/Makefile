@@ -362,8 +362,11 @@ endif
 # -DWOLF_CRYPTO_CB enable the vendor-neutral DHUK device; the optional
 # exact-key unwrap primitive stays gated behind -DWOLFSSL_STM32_DHUK_UNWRAP.
 ifeq ($(TARGET),dhuk)
-  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3 c562),)
-    $(error TARGET=dhuk requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=dhuk requires a SAES+DHUK board: u3 u585 u545 c5a3)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK
   # DHUK routes through the wolfCrypt crypto-callback framework
@@ -412,8 +415,11 @@ endif
 # that strips the software crypto so flash shrinks. The ECDSA sign route needs
 # SAES + DHUK + PKA together, so this is limited to the same boards as dhuk.
 ifeq ($(TARGET),cbonly)
-  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3 c562),)
-    $(error TARGET=cbonly requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=cbonly requires a SAES+DHUK board: u3 u585 u545 c5a3)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
   ifeq ($(SECURE),1)
@@ -427,8 +433,11 @@ endif
 # Reuses the STM32_BARE_CB_ONLY preset (WOLF_CRYPTO_CB_ONLY_AES + DHUK); needs a
 # SAES+DHUK board for the DHUK half of the coexistence check.
 ifeq ($(TARGET),aesplain)
-  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3 c562),)
-    $(error TARGET=aesplain requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=aesplain requires a SAES+DHUK board: u3 u585 u545 c5a3)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
   # SECURE=1: same TZEN=1 secure-state build as dhuk / ccb / cbonly (see the
