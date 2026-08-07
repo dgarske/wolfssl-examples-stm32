@@ -78,12 +78,11 @@ extern "C" {
     #define STM32_HASH
     #define STM32_RNG
     #define NO_AES_192   /* TinyAES does not support 192-bit keys */
-    #if defined(BUILD_BARE) && !defined(STM32_BUILD_CUBEMX)
-        /* U3 cubemx (HAL) build path: wolfssl's stm32.c is missing
-         * WOLFSSL_STM32U3 in the PKA hal_pka.h include-chain (only L5/
-         * U5/WB/WL/MP13/H7S/WBA/N6/H5 listed); enabling
-         * WOLFSSL_STM32_PKA there hits a #error. ECC falls back to SW
-         * math under CUBEMX until that upstream chain adds U3. */
+    #if defined(BUILD_BARE)
+        /* Both build paths: wolfssl's stm32.c now lists WOLFSSL_STM32U3 in
+         * the PKA hal_pka.h include-chain, so the HAL build gets HW PKA too
+         * (needed for DHUK seed-wrapped ECDSA sign under CUBEMX). The app
+         * supplies the PKA handle -- see boards/u3/hw_init_cubemx.c. */
         #define WOLFSSL_STM32_PKA
     #endif
 #elif defined(STM32_BOARD_U585)
