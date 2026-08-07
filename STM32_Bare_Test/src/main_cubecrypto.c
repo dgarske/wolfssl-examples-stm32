@@ -246,10 +246,15 @@ done:
 
 #ifdef HAVE_AESGCM
 /* [3] HW AES-GCM (plaintext key) via the CubeMX AES device. The CUBE_DEVID
- * device (wc_Stm32_DhukRegister) routes AES-ECB to the HAL with the plaintext
- * key (wc_Stm32_Aes_Init useSaes=0, no DHUK/SAES key derivation), which keys
- * AES-GCM -- so this matches the published McGrew/Viega vectors. Test case 3
- * (64-byte payload, no AAD). */
+ * device (wc_Stm32_DhukRegister) declines the DHUK path for this key and falls
+ * through to the HAL with the plaintext key, which keys AES-GCM -- so this
+ * matches the published McGrew/Viega vectors. Test case 3 (64-byte payload, no
+ * AAD).
+ *
+ * NOTE: the DHUK-vs-plaintext discriminator is the key length. A 256-bit key on
+ * a WC_DHUK_DEVID Aes is treated as a DHUK derivation SEED, not a literal key;
+ * this vector uses a 128-bit key, so it stays on the plaintext path. Register
+ * WOLFSSL_STM32_AES_DEVID (wc_Stm32_AesRegister) for plaintext-key AES-256. */
 static int test_aesgcm(void)
 {
     Aes    aes;
