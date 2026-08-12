@@ -14,6 +14,10 @@
  *       seed-dependence confirm the DHUK key drives the cipher).
  *   [4] ECDSA sign via the transparent crypto-callback (wc_ecc_sign_hash with
  *       a DHUK-wrapped scalar; verified with the public counterpart).
+ *   [7] wc_Stm32_Aes_Wrap blob word order -- runs on both build paths so the
+ *       shared WC_STM32_WRAP_ORDER_RAW blob can be compared bare vs CubeMX,
+ *       and each build's default order is asserted (raw on bare, legacy
+ *       byte-reversed on CubeMX, preserving wolfSSL 5.9.0 - 5.9.2 blobs).
  *
  * A backend that is gated off or unavailable (CRYPTOCB_UNAVAILABLE / a
  * TZEN-secure-context timeout) is reported as an expected soft-PASS, not a
@@ -560,6 +564,111 @@ cleanup:
 }
 #endif /* HAVE_AES_CBC */
 
+/* [6] wc_Stm32_Aes_Wrap blob word order. Runs on BOTH build paths so the two
+ * can be compared: WC_STM32_WRAP_ORDER_RAW must produce the same blob on
+ * bare-metal and CubeMX/HAL (that is the whole point of the shared format),
+ * while wc_Stm32_Aes_Wrap()'s default is deliberately per-build -- raw on
+ * bare, byte-reversed on CubeMX -- so key material provisioned by wolfSSL
+ * 5.9.0 - 5.9.2 still unwraps. Both blobs are printed so a bare run and a
+ * CubeMX run can be diffed by eye or by script.
+ *
+ * The wrap key here is a fixed software key (devId != WOLFSSL_DHUK_DEVID), not
+ * the silicon DHUK, so the output is reproducible across chips and the check
+ * is about byte order only. */
+static int test_dhuk_wrap_order(void)
+{
+    /* AES-128 FIPS-197 key, and a 32-byte payload to wrap. */
+    static const byte wrap_key[32] = {
+        0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,
+        0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81,
+        0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,
+        0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4
+    };
+    static const byte payload[32] = {
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
+        0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,
+        0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
+        0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f
+    };
+    Aes    aes;
+    byte   rawBlob[32];
+    byte   defBlob[32];
+    word32 rawSz = sizeof(rawBlob);
+    word32 defSz = sizeof(defBlob);
+    word32 i;
+    int    ret;
+
+    XMEMSET(rawBlob, 0, sizeof(rawBlob));
+    XMEMSET(defBlob, 0, sizeof(defBlob));
+
+    /* Shared raw order -- must match byte-for-byte on both build paths. */
+    ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
+    if (ret != 0) {
+        printf("  wc_AesInit failed: %d\n", ret);
+        return ret;
+    }
+    XMEMCPY(aes.key, wrap_key, sizeof(wrap_key));
+    aes.keylen = 32;
+    ret = wc_Stm32_Aes_Wrap_ex(&aes, payload, sizeof(payload), rawBlob, &rawSz,
+                               NULL, 0, WC_STM32_WRAP_ORDER_RAW);
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  wrap_ex(RAW) failed: %d\n", ret);
+        return ret;
+    }
+
+    /* Whatever this build's wc_Stm32_Aes_Wrap() defaults to. */
+    ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
+    if (ret != 0) {
+        printf("  wc_AesInit failed: %d\n", ret);
+        return ret;
+    }
+    XMEMCPY(aes.key, wrap_key, sizeof(wrap_key));
+    aes.keylen = 32;
+    ret = wc_Stm32_Aes_Wrap(&aes, payload, sizeof(payload), defBlob, &defSz,
+                            NULL, 0);
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  wrap(default) failed: %d\n", ret);
+        return ret;
+    }
+
+    if (rawSz != sizeof(rawBlob) || defSz != sizeof(defBlob)) {
+        printf("  wrap returned wrong size (raw=%lu def=%lu) -- FAIL\n",
+               (unsigned long)rawSz, (unsigned long)defSz);
+        return -1;
+    }
+
+    printf("  wrap RAW blob:    ");
+    for (i = 0; i < sizeof(rawBlob); i++) printf("%02x", rawBlob[i]);
+    printf("\n  wrap default blob:");
+    for (i = 0; i < sizeof(defBlob); i++) printf("%02x", defBlob[i]);
+    printf("\n");
+
+#ifdef WOLFSSL_STM32_CUBEMX
+    /* CubeMX default is the legacy byte-reversed order, so it must NOT equal
+     * the shared raw blob -- if it did, the 5.9.x compatibility default has
+     * been lost. */
+    if (XMEMCMP(rawBlob, defBlob, sizeof(rawBlob)) == 0) {
+        printf("  CubeMX default equals RAW -- FAIL "
+               "(legacy 5.9.x blob order lost)\n");
+        return -1;
+    }
+    printf("  CubeMX default is the legacy (byte-reversed) order OK\n");
+#else
+    /* Bare default has always been the raw order. */
+    if (XMEMCMP(rawBlob, defBlob, sizeof(rawBlob)) != 0) {
+        printf("  bare default differs from RAW -- FAIL "
+               "(bare blob order changed)\n");
+        return -1;
+    }
+    printf("  bare default is the raw order OK\n");
+#endif
+    printf("  compare the RAW line against the other build to confirm "
+           "cross-build interop\n");
+    return 0;
+}
+
 #if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
 /* [4] ECDSA sign with a DHUK-protected private key via the normal
  * wc_ecc_sign_hash API. Self-bootstrap: make a P-256 keypair, ECB-encrypt
@@ -1102,6 +1211,10 @@ int main(void)
             ret = test_dhuk_op_roundtrip();
         }
 #endif
+        if (ret == 0) {
+            printf("\n[7] wc_Stm32_Aes_Wrap blob word order:\n");
+            ret = test_dhuk_wrap_order();
+        }
 
         wc_FreeRng(&rng);
     }
