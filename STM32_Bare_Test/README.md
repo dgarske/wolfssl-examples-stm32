@@ -180,6 +180,26 @@ has nothing to accelerate.
 | `ccbhal`| `src/main_ccbhal.c`| CubeMX `HAL_CCB_*` reference flow (provision + sign + SW-verify), `u3` only. |
 | `cbonly`| `src/main_cbonly.c`| Callback-only: ECDSA, full-payload AES-GCM, HMAC-SHA256, TRNG all on hardware, with the `STM32_BARE_CB_ONLY` software-strip preset. |
 | `puf` | `src/main_puf.c` | Configurable SRAM PUF (BCH(127,k,t) fuzzy extractor + HKDF) enroll/reconstruct regression in synthetic-SRAM mode. `PUF_T` selects the BCH profile (7/10/13/15), `PUF_CW` the codeword count. |
+| `aesplain`| `src/main_aesplain.c`| Plaintext-key AES vs DHUK-seed AES: registers both devices and selects per `Aes` by devId. Plaintext AES-GCM matches a published KAT; same key bytes yield different ciphertext under each device. SAES+DHUK boards. |
+| `plaingcm`| `src/main_plaingcm.c`| Direct `wc_Stm32_Aes_Gcm()` AES-GCM KAT (encrypt, decrypt-verify, tamper-reject) with a plaintext key and NO software fallback -- a pass proves the HW GCM engine produced the output. Boards with AES-GCM silicon only. |
+| `cubeaes`| `src/main_cubeaes.c`| `WOLF_CRYPTO_CB_ONLY_AES` on the CubeMX/HAL build: registers the CubeMX AES crypto-callback device and runs AES-GCM KATs (test cases 3 and 4) with a plaintext key. `BUILD=cubemx` + `CONFIG=bare` + `BOARD=u3`. |
+| `cubecrypto`| `src/main_cubecrypto.c`| Full HW crypto through the callback on the CubeMX/HAL build under `WOLF_CRYPTO_CB_ONLY_ECC` + `WOLF_CRYPTO_CB_ONLY_AES`: HW ECDSA sign+verify (PKA), CCB-protected ECDSA, and AES-GCM (HAL). `BUILD=cubemx` + `CONFIG=bare` + `BOARD=u3`. |
+
+`TARGET=plaingcm` calls `wc_Stm32_Aes_Gcm()` directly instead of going through `wc_AesGcmEncrypt`, so there is no software GHASH fallback to hide a hardware problem: if it returns 0 and the output matches the published McGrew & Viega test-case-3 vector, the STM32 GCM engine produced it. It needs a board whose silicon actually carries an AES IP with a HW GCM mode -- the CRYP IP on `f437` / `f439` / `h7`, or the TinyAES IP (routed to SAES on `h7s3` / `n657`) on `h7s3`, `u3`, `u585`, `u545`, `l4a6`, `l562`, `wba52`, `n657`. Boards with no AES silicon (`u5`, `f767`, `l552`) and the C5 boards are rejected by the Makefile. `c5a3` / `c562` have the IP, but the STM32C5 CMSIS names the GCM phase field `AES_CR_CPHASE` rather than `AES_CR_GCMPH`, and wolfSSL only abstracts that rename on the DHUK/SAES path -- the plaintext-key `wc_Stm32_Aes_Gcm()` compiles to the `CRYPTOCB_UNAVAILABLE` stub there, so use `TARGET=aesplain` on C5 instead.
+
+```
+make BOARD=f439 CONFIG=bare TARGET=plaingcm flash
+make BOARD=u3   CONFIG=bare TARGET=plaingcm flash
+```
+
+`TARGET=cubeaes` and `TARGET=cubecrypto` are the CubeMX/HAL counterparts to `aesplain` and `cbonly`: both require `BUILD=cubemx` (ST's HAL drivers rather than the direct-register path), `CONFIG=bare` (which is what defines `WOLFSSL_STM32_CUBEMX`) and `BOARD=u3` (NUCLEO-U385RG-Q, the board this tree carries a CubeMX HAL init for). `cubeaes` proves `WOLF_CRYPTO_CB_ONLY_AES` works over the HAL: the device's AES-ECB handler lets `wc_AesGcmSetKey` derive the GHASH subkey H on hardware, after which bulk GCM runs on the native HAL engine. `cubecrypto` is the wider config shape -- software ECC and AES both stripped, so ECDSA sign/verify go to the PKA, CCB-protected ECDSA to `HAL_CCB_*`, and AES-GCM to the HAL. The application brings up the ST HAL PKA itself (`HAL_PKA_Init` on the `hpka` handle the board file defines). Its CCB step reports `SKIPPED` rather than PASS, because on-chip provisioning needs the software keygen that `WOLF_CRYPTO_CB_ONLY_ECC` removes; provision the blob in a non-stripped build to exercise the CCB sign path.
+
+```
+make BOARD=u3 BUILD=cubemx CONFIG=bare TARGET=cubeaes    flash
+make BOARD=u3 BUILD=cubemx CONFIG=bare TARGET=cubecrypto flash
+```
+
+`TARGET=aesplain` registers the plaintext-key AES device (`wc_Stm32_AesRegister(WOLFSSL_STM32_AES_DEVID)`) alongside the DHUK device (`wc_Stm32_DhukRegister(WC_DHUK_DEVID)`) in one bare `STM32_BARE_CB_ONLY` build, then proves an `Aes` on the plaintext devId reproduces a published AES-GCM vector (key used verbatim) while an `Aes` on the DHUK devId turns the same bytes into a device-bound key -- the two ciphertexts differ and each device decrypts its own output. Limited to the SAES + DHUK boards (`u3`, `u585`, `u545`, `c5a3`, `c562`).
 
 `TARGET=dhuk` is limited to the SAES + PKA + DHUK boards (`u3`, `u585`, `u545`) and adds `-DWOLFSSL_DHUK -DWOLF_CRYPTO_CB`, which enable the STM32 DHUK crypto-callback device (in `wolfcrypt/src/port/st/stm32.c`). An application registers the device once (`wc_Stm32_DhukRegister(WC_DHUK_DEVID)`), inits a normal `Aes` / `ecc_key` with `devId = WC_DHUK_DEVID`, supplies the 256-bit seed as the key (`wc_AesGcmSetKey` / `wc_AesSetKey`) or via `wc_ecc_import_wrapped_private`, then performs NORMAL wolfCrypt calls -- the device-bound key is derived inside SAES and never appears in software. `main_dhuk.c`:
 
@@ -940,6 +960,10 @@ Format the per-board section as:
 | `ccb`   | `src/main_ccb.c` - CCB-protected ECDSA via wc_ecc_sign_hash (u3, bare + cubemx) |
 | `ccbhal`| `src/main_ccbhal.c` - ST HAL_CCB reference flow (u3, cubemx) |
 | `cbonly`| `src/main_cbonly.c` - callback-only ECDSA + AES-GCM + HMAC-SHA256 + TRNG on HW, `STM32_BARE_CB_ONLY` flash-strip (u3/u585/u545/c5a3/c562) |
+| `aesplain`| `src/main_aesplain.c` - plaintext-key AES vs DHUK-seed AES selected per `Aes` by devId (u3/u585/u545/c5a3/c562) |
+| `plaingcm`| `src/main_plaingcm.c` - direct `wc_Stm32_Aes_Gcm()` HW AES-GCM KAT, no SW fallback (f437/f439/h7/h7s3/u3/u585/u545/l4a6/l562/wba52/n657) |
+| `cubeaes`| `src/main_cubeaes.c` - CubeMX AES crypto-callback AES-GCM KATs, `WOLF_CRYPTO_CB_ONLY_AES` (u3, cubemx) |
+| `cubecrypto`| `src/main_cubecrypto.c` - CubeMX HW ECDSA (PKA) + CCB ECDSA + AES-GCM all via the callback (u3, cubemx) |
 
 ## Prerequisites
 

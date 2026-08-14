@@ -418,7 +418,8 @@ static int test_rng_smoke(void)
     return 0;
 }
 
-#if defined(WOLFSSL_DHUK) && defined(WOLFSSL_STM32_BARE)
+#if defined(WOLFSSL_DHUK) && \
+    (defined(WOLFSSL_STM32_BARE) || defined(WOLFSSL_STM32_CUBEMX))
 #include <wolfssl/wolfcrypt/port/st/stm32.h>
 /* DHUK round-trip KAT.
  *  - Wrap a fixed 256-bit "key to protect" K under the silicon DHUK
@@ -559,7 +560,7 @@ static int test_dhuk_roundtrip(void)
     printf("  DHUK round-trip OK (chip-bound wrap)\n");
     return 0;
 }
-#endif /* WOLFSSL_DHUK && WOLFSSL_STM32_BARE */
+#endif /* WOLFSSL_DHUK && (BARE || CUBEMX) */
 
 int main(void)
 {
@@ -632,7 +633,8 @@ int main(void)
 #endif
 #endif
 
-#if defined(WOLFSSL_DHUK) && defined(WOLFSSL_STM32_BARE)
+#if defined(WOLFSSL_DHUK) && \
+    (defined(WOLFSSL_STM32_BARE) || defined(WOLFSSL_STM32_CUBEMX))
     printf("\n[D] DHUK Wrap + DhukOp round-trip KAT:\n");
     ret = test_dhuk_roundtrip();
     if (ret != 0) {

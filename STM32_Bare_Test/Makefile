@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -180,8 +180,8 @@ else
     $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_rng_ex.c \
     $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_pka.c
   # CCB targets (U3 only) need the CCB HAL driver module: ccbhal is the raw HAL
-  # reference; ccb under cubemx routes the wolfSSL port through HAL_CCB.
-  ifneq ($(filter $(TARGET),ccb ccbhal),)
+  # reference; ccb / cubecrypto under cubemx route the wolfSSL port through HAL_CCB.
+  ifneq ($(filter $(TARGET),ccb ccbhal cubecrypto),)
     HAL_C_SRC += $(HAL_SRC_DIR)/stm32$(HAL_FAMILY_LC)_hal_ccb.c
   endif
   # Filter out any files that don't exist (different family packs ship
@@ -234,6 +234,8 @@ endif
 # the same device key, which pins the GenerateM0() wiring in Stm32Dhuk_Gmac.
 ifeq ($(GCM),small)
   GCM_DEFS := -DSTM32_BARE_GCM_SMALL
+else ifeq ($(GCM),table)
+  GCM_DEFS := -DSTM32_BARE_GCM_TABLE
 else
   GCM_DEFS :=
 endif
@@ -360,8 +362,11 @@ endif
 # -DWOLF_CRYPTO_CB enable the vendor-neutral DHUK device; the optional
 # exact-key unwrap primitive stays gated behind -DWOLFSSL_STM32_DHUK_UNWRAP.
 ifeq ($(TARGET),dhuk)
-  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3 c562),)
-    $(error TARGET=dhuk requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=dhuk requires a SAES+DHUK board: u3 u585 u545 c5a3)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK
   # DHUK routes through the wolfCrypt crypto-callback framework
@@ -410,14 +415,95 @@ endif
 # that strips the software crypto so flash shrinks. The ECDSA sign route needs
 # SAES + DHUK + PKA together, so this is limited to the same boards as dhuk.
 ifeq ($(TARGET),cbonly)
-  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3 c562),)
-    $(error TARGET=cbonly requires a SAES+DHUK board: u3 u585 u545 c5a3 c562)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=cbonly requires a SAES+DHUK board: u3 u585 u545 c5a3)
   endif
   COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
   ifeq ($(SECURE),1)
     COMMON_DEFS += -mcmse
     LDFLAGS     += -mcmse
   endif
+endif
+# Plaintext-key AES vs DHUK-seed AES on the bare build -- registers both the
+# plaintext AES device (wc_Stm32_AesRegister, WOLFSSL_STM32_AES_DEVID) and the
+# DHUK device (WC_DHUK_DEVID) at once and selects between them per Aes by devId.
+# Reuses the STM32_BARE_CB_ONLY preset (WOLF_CRYPTO_CB_ONLY_AES + DHUK); needs a
+# SAES+DHUK board for the DHUK half of the coexistence check.
+ifeq ($(TARGET),aesplain)
+  # c562 is excluded: the STM32C562 device header in the C5 DFP defines no
+  # SAES (and no AES_CR_KEYSEL_0) at all, unlike stm32c5a3xx.h, so every
+  # DHUK target fails to compile there. Re-add once a DFP with SAES ships.
+  ifeq ($(filter $(BOARD),u3 u585 u545 c5a3),)
+    $(error TARGET=aesplain requires a SAES+DHUK board: u3 u585 u545 c5a3)
+  endif
+  COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB -DSTM32_BARE_CB_ONLY
+  # SECURE=1: same TZEN=1 secure-state build as dhuk / ccb / cbonly (see the
+  # comment in the dhuk block above). The DHUK half of the coexistence check is
+  # the path that needs secure state on a TZEN=1 part (e.g. the B-U585I-IOT02A).
+  ifeq ($(SECURE),1)
+    COMMON_DEFS += -mcmse
+    LDFLAGS     += -mcmse
+  endif
+endif
+# Direct HW AES-GCM (plaintext key) check -- calls wc_Stm32_Aes_Gcm() with no SW
+# fallback and verifies against a published whole-block vector. Confirms the bare
+# HW GCM engine does encrypt + decrypt-verify. Needs a board whose silicon carries
+# an AES IP with a HW GCM mode: the CRYP IP on f437/f439/h7, or the TinyAES IP
+# (routed to SAES on h7s3/n657) with AES_CR_GCMPH on h7s3/u3/u585/u545/l4a6/
+# l562/wba52/n657.
+# Excluded on purpose: u5 (U575), f767 (F767ZI) and l552 (L552ZE) have no AES IP
+# at all (NO_STM32_CRYPTO in user_settings.h). c5a3/c562 do have the IP, but the
+# STM32C5 CMSIS names the GCM phase field AES_CR_CPHASE instead of AES_CR_GCMPH,
+# and wolfSSL only abstracts that rename (WC_STM32_AES_CR_PHASE) on the DHUK/SAES
+# path -- the plaintext-key wc_Stm32_Aes_Gcm() compiles to the
+# CRYPTOCB_UNAVAILABLE stub there. Use TARGET=aesplain on C5 instead.
+ifeq ($(TARGET),plaingcm)
+  ifeq ($(filter $(BOARD),f437 f439 h7 h7s3 u3 u585 u545 l4a6 l562 wba52 n657),)
+    $(error TARGET=plaingcm requires a board with STM32 AES-GCM HW: f437 f439 h7 h7s3 u3 u585 u545 l4a6 l562 wba52 n657)
+  endif
+endif
+# CubeMX AES crypto-callback test -- verifies WOLF_CRYPTO_CB_ONLY_AES works on
+# the HAL build. Registers wc_Stm32_AesRegister (the new CubeMX AES device
+# in wolfcrypt/src/port/st/stm32.c) and runs AES-GCM KATs with a plaintext key:
+# the device's AES-ECB handler keys GCM, then bulk GCM runs on the native HAL
+# engine. Requires BUILD=cubemx (HAL crypto driver) and BOARD=u3 (NUCLEO-U385RG-Q).
+ifeq ($(TARGET),cubeaes)
+  ifneq ($(BUILD),cubemx)
+    $(error TARGET=cubeaes requires BUILD=cubemx)
+  endif
+  # CONFIG=bare is what defines WOLFSSL_STM32_CUBEMX (see user_settings.h), which
+  # in turn pulls the family HAL header the app needs. Without it the app drops to
+  # its "not enabled" arm and wolfssl raises its own #error, so gate it here to
+  # give a clear message instead.
+  ifneq ($(CONFIG),bare)
+    $(error TARGET=cubeaes requires CONFIG=bare)
+  endif
+  ifeq ($(filter $(BOARD),u3),)
+    $(error TARGET=cubeaes requires BOARD=u3 (NUCLEO-U385RG-Q))
+  endif
+  COMMON_DEFS += -DWOLF_CRYPTO_CB -DSTM32_CUBE_AES_ONLY
+endif
+# CubeMX full HW-crypto callback test -- HW ECDSA sign+verify (normal key -> PKA),
+# CCB-protected ECDSA (HAL_CCB), and AES-GCM, all through the crypto callback under
+# WOLF_CRYPTO_CB_ONLY_ECC + WOLF_CRYPTO_CB_ONLY_AES. Exercises the CubeMX device's
+# new ECDSA verify + normal-key sign handlers. Needs the HAL PKA + CCB drivers.
+ifeq ($(TARGET),cubecrypto)
+  ifneq ($(BUILD),cubemx)
+    $(error TARGET=cubecrypto requires BUILD=cubemx)
+  endif
+  # As for cubeaes: CONFIG=bare is what defines WOLFSSL_STM32_CUBEMX, which the
+  # ST HAL PKA handle (PKA_HandleTypeDef hpka) in main_cubecrypto.c depends on.
+  ifneq ($(CONFIG),bare)
+    $(error TARGET=cubecrypto requires CONFIG=bare)
+  endif
+  ifeq ($(filter $(BOARD),u3),)
+    $(error TARGET=cubecrypto requires BOARD=u3 (NUCLEO-U385RG-Q))
+  endif
+  COMMON_DEFS += -DWOLFSSL_STM32_PKA -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB \
+                 -DWOLFSSL_STM32_CCB -DSTM32_CUBE_CRYPTO_ONLY
 endif
 
 ALL_C_SRC := $(SRC_C) $(WC_SRC)

@@ -16,7 +16,23 @@
 
 static UART_HandleTypeDef s_huart1;
 
+/* wolfSSL's CubeMX PKA path (stm32_ecc_sign_hash_ex / _verify_hash_ex) uses
+ * this handle by extern reference and expects the application to have brought
+ * the peripheral up -- unlike the bare path, whose HAL_PKA_* shims init it
+ * lazily. STM32_HW_CLOCK_AUTO does not cover PKA. */
 PKA_HandleTypeDef hpka = { .Instance = PKA };
+
+static void pka_init_cubemx(void)
+{
+    __HAL_RCC_PKA_CLK_ENABLE();
+    /* The PKA pulls its seed from the RNG, so the RNG clock must be on before
+     * HAL_PKA_Init or INITOK never asserts. */
+    __HAL_RCC_RNG_CLK_ENABLE();
+    if (HAL_PKA_Init(&hpka) != HAL_OK) {
+        printf("PKA init FAILED: CR=0x%08lx SR=0x%08lx\n",
+               (unsigned long)PKA->CR, (unsigned long)PKA->SR);
+    }
+}
 
 void board_putc(int ch)
 {
@@ -109,6 +125,7 @@ void board_init(void)
     (void)HAL_Init();
     (void)clock_init_cubemx();
     (void)uart_init_cubemx();
+    pka_init_cubemx();
     board_common_systick_init(96000000u);
 }
 

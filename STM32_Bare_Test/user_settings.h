@@ -78,12 +78,11 @@ extern "C" {
     #define STM32_HASH
     #define STM32_RNG
     #define NO_AES_192   /* TinyAES does not support 192-bit keys */
-    #if defined(BUILD_BARE) && !defined(STM32_BUILD_CUBEMX)
-        /* U3 cubemx (HAL) build path: wolfssl's stm32.c is missing
-         * WOLFSSL_STM32U3 in the PKA hal_pka.h include-chain (only L5/
-         * U5/WB/WL/MP13/H7S/WBA/N6/H5 listed); enabling
-         * WOLFSSL_STM32_PKA there hits a #error. ECC falls back to SW
-         * math under CUBEMX until that upstream chain adds U3. */
+    #if defined(BUILD_BARE)
+        /* Both build paths: wolfssl's stm32.c now lists WOLFSSL_STM32U3 in
+         * the PKA hal_pka.h include-chain, so the HAL build gets HW PKA too
+         * (needed for DHUK seed-wrapped ECDSA sign under CUBEMX). The app
+         * supplies the PKA handle -- see boards/u3/hw_init_cubemx.c. */
         #define WOLFSSL_STM32_PKA
     #endif
 #elif defined(STM32_BOARD_U585)
@@ -667,6 +666,9 @@ extern "C" {
 #if defined(STM32_BARE_GCM_SMALL)
     #undef  GCM_TABLE_4BIT
     #define GCM_SMALL
+#elif defined(STM32_BARE_GCM_TABLE)
+    #undef  GCM_TABLE_4BIT
+    #define GCM_TABLE
 #else
     #define GCM_TABLE_4BIT
 #endif
@@ -882,6 +884,33 @@ extern "C" {
     #undef  WOLFSSL_CERT_GEN
     #undef  WOLFSSL_KEY_GEN
     #define NO_ERROR_STRINGS  /* error.c strings table is ~20 KB */
+#endif
+
+/* CubeMX AES crypto-callback test (Makefile TARGET=cubeaes ->
+ * -DSTM32_CUBE_AES_ONLY). Turns on WOLF_CRYPTO_CB_ONLY_AES so the software AES
+ * core is stripped and every AES op routes through the crypto callback -- the
+ * new CubeMX AES device (wc_Stm32_AesRegister). main_cubeaes.c registers it
+ * and runs AES-GCM KATs on the HAL. Only AES is exercised; the rest of the
+ * common config (ECC/SHA/etc.) stays as software but is unused here. */
+#ifdef STM32_CUBE_AES_ONLY
+    #define WOLF_CRYPTO_CB_ONLY_AES
+#endif
+
+/* CubeMX full HW-crypto callback test (Makefile TARGET=cubecrypto ->
+ * -DSTM32_CUBE_CRYPTO_ONLY). Strips software ECC and AES so both route through
+ * the crypto callback -- the CubeMX device's HW ECDSA sign/verify (PKA), CCB
+ * ECDSA, and HAL AES. This is the customer's config shape; main_cubecrypto.c
+ * brings up the ST HAL PKA (hpka + HAL_PKA_Init) that the PKA path needs. */
+#ifdef STM32_CUBE_CRYPTO_ONLY
+    /* Callback-only ECC only on full-PKA parts, matching STM32_BARE_CB_ONLY
+     * above. The C5 PKA is sign-only (WC_STM32_PKA_SIGN_ONLY) with no HW ECDSA
+     * verify, so stripping software ECC there would leave verify with no
+     * implementation. Latent today (the Makefile pins cubecrypto to BOARD=u3)
+     * but keeps the two presets consistent as boards are added. */
+    #ifndef WOLFSSL_STM32C5
+        #define WOLF_CRYPTO_CB_ONLY_ECC
+    #endif
+    #define WOLF_CRYPTO_CB_ONLY_AES
 #endif
 
 /* G071RB is even tighter -- 128 KB flash / 36 KB RAM, AND no HW crypto
