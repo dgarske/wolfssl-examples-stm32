@@ -134,6 +134,45 @@ extern "C" {
     #if defined(BUILD_BARE)
         #define WOLFSSL_STM32_PKA
     #endif
+#elif defined(STM32_BOARD_V8)
+    /* NUCLEO-V873XJ (STM32V873XJ): Cortex-M85, Armv8.1-M + Helium, 4 MB
+     * flash, device ID 0x499 Rev B.
+     *
+     * Inventory read from STM32CubeProgrammer 2.22.0's SVD/STM32V873.svd:
+     * CRYP (fat -- K0LR..K3RR, CSGCMCCM0..7R, GCM_CCMPH, 2-bit KEYSIZE, so
+     * AES-192 IS supported), SAES (DHUK/BHK via CR.KEYSEL), HASH (new-gen,
+     * CSR0..102 -> HASH_CR_SIZE 103, HR0..15 -> 64-byte digest), PKA (V2
+     * with BOTH sign 0x24 and verify 0x26 -- not restricted like C5/H563),
+     * RNG (CONDRST/NISTC/HTCR0..3) and CCB. All six clocks live on
+     * RCC_AHB3ENR bits 0/1/2/3/8/15. That topology matches N6, so the
+     * wolfSSL stm32.h arms should be cloned from N6, not from C5.
+     *
+     * HASH_CR.ALGO is 4 bits with 13 values. Seven -- 0x0/0x2/0x3/0xC/0xD/
+     * 0xE/0xF -- match wolfSSL's existing new-gen SHA-1/2 mapping exactly.
+     * The six extras (0x4-0x7, 0x8-0x9) are almost certainly SHA3-224/256/
+     * 384/512 + SHAKE128/256, but the SVD enum names are placeholders so
+     * that assignment is INFERRED, not documented -- confirm against the RM
+     * or an on-silicon KAT before relying on it. Note there is no SHA3CFGR
+     * register and the digest stops at 64 bytes, which strongly suggests a
+     * fixed-length (non-resumable) XOF squeeze -- i.e. no ML-KEM/ML-DSA win.
+     *
+     * HW blocks are enabled one at a time as each is validated on this
+     * silicon. */
+    #define WOLFSSL_STM32V8
+    /* Umbrella derives STM32_RNG/HASH/CRYPTO/HMAC; opt out of what is not
+     * validated yet. RNG's MCG48 source is enabled in hw_init.c (V8 has no
+     * CCIPR mux for it). */
+    /* AES enabled 8/26, routed through the SAES instance like N6: the BARE
+     * TinyAES driver shape matches SAES registers (IVR0..3, KEYR0..7); the
+     * fat CRYP (IV0LR.., K0LR..) would need its own bare path wiring. Costs
+     * AES-192 (settings.h gates NO_AES_192 on USE_SAES for V8, as for N6). */
+    #define WOLFSSL_STM32_USE_SAES
+    /* V2 PKA (sign AND verify, per PKA_CR.MODE enum). Operand RAM offsets
+     * are IP constants emitted by svd2cmsis.py. BARE only, as on N657. */
+    #if defined(BUILD_BARE)
+        #define WOLFSSL_STM32_PKA
+    #endif
+    #define NO_STM32_HMAC  /* match C5A3/C562 until HKDF-over-HW is proven */
 #elif defined(STM32_BOARD_C562)
     #define WOLFSSL_STM32C5
     /* NUCLEO-C562RE: same C5 family as C5A3. Same crypto IP set: AES
@@ -397,7 +436,7 @@ extern "C" {
     #define STM32_C031_TRIM
     #define WOLFSSL_SMALL_STACK
 #else
-    #error "Define one of STM32_BOARD_C031 / STM32_BOARD_H5 / STM32_BOARD_H573 / STM32_BOARD_H7 / STM32_BOARD_H723 / STM32_BOARD_H7A3 / STM32_BOARD_H7S3 / STM32_BOARD_U5 / STM32_BOARD_U3 / STM32_BOARD_U585 / STM32_BOARD_U545 / STM32_BOARD_U083 / STM32_BOARD_C562 / STM32_BOARD_C5A3 / STM32_BOARD_WB55 / STM32_BOARD_WL55 / STM32_BOARD_G071 / STM32_BOARD_G474 / STM32_BOARD_G491 / STM32_BOARD_WBA52 / STM32_BOARD_F207 / STM32_BOARD_F303 / STM32_BOARD_F437 / STM32_BOARD_F439 / STM32_BOARD_F767 / STM32_BOARD_L4A6 / STM32_BOARD_L552 / STM32_BOARD_L562"
+    #error "Define one of STM32_BOARD_C031 / STM32_BOARD_H5 / STM32_BOARD_H573 / STM32_BOARD_H7 / STM32_BOARD_H723 / STM32_BOARD_H7A3 / STM32_BOARD_H7S3 / STM32_BOARD_U5 / STM32_BOARD_U3 / STM32_BOARD_U585 / STM32_BOARD_U545 / STM32_BOARD_U083 / STM32_BOARD_C562 / STM32_BOARD_C5A3 / STM32_BOARD_WB55 / STM32_BOARD_WL55 / STM32_BOARD_G071 / STM32_BOARD_G474 / STM32_BOARD_G491 / STM32_BOARD_WBA52 / STM32_BOARD_F207 / STM32_BOARD_F303 / STM32_BOARD_F437 / STM32_BOARD_F439 / STM32_BOARD_F767 / STM32_BOARD_L4A6 / STM32_BOARD_L552 / STM32_BOARD_L562 / STM32_BOARD_V8"
 #endif
 
 /* ---------------------------------------------------------------------- */
@@ -559,7 +598,9 @@ extern "C" {
     #define WOLFSSL_SHA3
     #define WOLFSSL_SHAKE128
     #define WOLFSSL_SHAKE256
-    #define WC_SHA3_NO_ASM
+    #ifndef STM32_BARE_SHA3_ASM
+        #define WC_SHA3_NO_ASM
+    #endif
 
     #define BUILD_CONFIG_NAME "asm"
 #elif defined(BUILD_C)
@@ -607,7 +648,8 @@ extern "C" {
     #endif
     /* asm path scopes WOLFSSL_ARMASM off for sha3.c (thumb2-sha3 ASM
      * is not pulled in -- see wl55 flash-overflow note in Makefile). */
-    #if defined(BUILD_ASM) && !defined(WC_SHA3_NO_ASM)
+    #if defined(BUILD_ASM) && !defined(STM32_BARE_SHA3_ASM) && \
+        !defined(WC_SHA3_NO_ASM)
         #define WC_SHA3_NO_ASM
     #endif
 #endif
