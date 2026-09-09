@@ -20,7 +20,8 @@
 #   b_system        board system_stm32*.c source
 # Optional overrides:
 #   b_chipdef       -D token if not STM32<upper(b_chip)>xx (h7a3, f303)
-#   b_extra_defs    extra CPU_DEFS appended unconditionally (wl55 -DCORE_CM4)
+#   b_extra_defs    extra compiler flags appended to CPU_DEFS unconditionally
+#                   (defines or tuning flags: wl55 -DCORE_CM4, v8 -mtune=...)
 #   b_hal_v2        1 -> add -DSTM32_HAL_V2 under BUILD=cubemx (f4 v1.28+, u0)
 #   b_ldsuffix      ld basename suffix, default "flat" (n657/h7s3 use "lrun")
 #   STLINK_SERIAL / USE_CUBE_PROGRAMMER / LDSCRIPT / STARTUP_S /
@@ -66,6 +67,17 @@ ifndef MCU_FLAGS
   endif
   ifeq ($(b_core),m55)
     MCU_FLAGS := -mcpu=cortex-m55 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
+  endif
+  # Cortex-M85 (Armv8.1-M, STM32V8). No -mfpu=: -mcpu=cortex-m85 already
+  # selects the correct FPU. +nomve is load-bearing -- GCC defines
+  # __ARM_FEATURE_MVE 3 by default on this core, so without it the
+  # autovectorizer quietly puts Helium into what we report as the pure
+  # software baseline. Use b_core=m85_mve for the deliberate A/B.
+  ifeq ($(b_core),m85)
+    MCU_FLAGS := -mcpu=cortex-m85+nomve -mthumb -mfloat-abi=hard
+  endif
+  ifeq ($(b_core),m85_mve)
+    MCU_FLAGS := -mcpu=cortex-m85 -mthumb -mfloat-abi=hard
   endif
   ifndef MCU_FLAGS
     $(error board.mk for $(BOARD) set b_core=$(b_core) which board-derive.mk \

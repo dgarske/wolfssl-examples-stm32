@@ -54,6 +54,9 @@ declare -A PTY_NAME=(
     [u5]=NUCLEO_U575ZI_Q_UART
     [u545]=NUCLEO_U545RE_Q_UART
     [u585]=B_U585I_IOT02A_UART
+    # v8 has no UART yet -- console is a .noinit RAM buffer read over SWD.
+    # This name is aspirational; not a working capture source until UART lands.
+    [v8]=STM32_STLINK_V3_UART_34313937
     [wb55]=NUCLEO_WB55RG_UART
     [wba52]=NUCLEO_WBA52CG_UART
     [wl55]=NUCLEO_WL55JC_UART
@@ -63,6 +66,7 @@ declare -A PTY_NAME=(
 # Format: "<board>:<reason>".
 declare -A EXCLUDE=(
     [c031]="bench overflows 32 KB flash"
+    [v8]="passes but runs uncached (~20min/config); enable caches before sweeping"
 )
 
 # Per (board,config) skip set: M0/M0+ cannot build the asm config.
@@ -73,7 +77,7 @@ declare -A SKIP_BOARD_CONFIG=(
 
 # ---- Argument parsing ----------------------------------------------------
 ALL_BOARDS=(c562 c5a3 f207 f303 f437 f439 f767 g071 g474 g491 h5 h573 h7 h723 \
-            h7a3 h7s3 l4a6 l552 l562 n657 u083 u3 u5 u545 u585 wb55 wba52 wl55)
+            h7a3 h7s3 l4a6 l552 l562 n657 u083 u3 u5 u545 u585 v8 wb55 wba52 wl55)
 ALL_CONFIGS=(bare asm c)
 
 BOARDS_ARG=""

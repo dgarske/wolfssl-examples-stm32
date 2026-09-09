@@ -46,21 +46,27 @@ BUILD    ?= bare
 PQC      ?= 0
 STACK    ?= 0
 
-ifeq ($(filter $(BOARD),c031 h5 h573 h7 h7a3 h7s3 h723 u5 u3 u585 u545 u083 f207 f303 f437 f439 f767 wb55 wl55 g071 g474 g491 wba52 n657 c562 c5a3 l4a6 l552 l562),)
-  $(error BOARD must be one of: c031 | h5 | h573 | h7 | h7a3 | h7s3 | h723 | u5 | u3 | u585 | u545 | u083 | f207 | f303 | f437 | f439 | f767 | wb55 | wl55 | g071 | g474 | g491 | wba52 | n657 | c562 | c5a3 | l4a6 | l552 | l562)
+ifeq ($(filter $(BOARD),c031 h5 h573 h7 h7a3 h7s3 h723 u5 u3 u585 u545 u083 f207 f303 f437 f439 f767 wb55 wl55 g071 g474 g491 wba52 n657 c562 c5a3 l4a6 l552 l562 v8),)
+  $(error BOARD must be one of: c031 | h5 | h573 | h7 | h7a3 | h7s3 | h723 | u5 | u3 | u585 | u545 | u083 | f207 | f303 | f437 | f439 | f767 | wb55 | wl55 | g071 | g474 | g491 | wba52 | n657 | c562 | c5a3 | l4a6 | l552 | l562 | v8)
 endif
 
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign)
+ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign v8sha3),)
+  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign | v8sha3)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
 # vector through the PKA registers directly, compared to ST's expected R,S.
 # Runs ST's CCB_RNG_Init / CONDRST + NIST sequence on live silicon and reports
 # the precise failure mode. C5 boards only.
+# v8sha3: bare register-level STM32V8 HASH SHA-3/SHAKE probe (no wolfCrypt).
+ifeq ($(TARGET),v8sha3)
+  ifneq ($(BOARD),v8)
+    $(error TARGET=v8sha3 requires BOARD=v8)
+  endif
+endif
 ifneq ($(filter $(TARGET),c5rng c5sign),)
   ifeq ($(filter $(BOARD),c5a3 c562),)
     $(error TARGET=$(TARGET) requires a C5 board: c5a3 | c562)
@@ -216,6 +222,11 @@ ifeq ($(PQC),1)
 else
   PQC_DEFS :=
 endif
+ifeq ($(SHA3_ASM),1)
+  SHA3_DEFS := -DSTM32_BARE_SHA3_ASM
+else
+  SHA3_DEFS :=
+endif
 
 # STACK=1 enables per-algorithm peak stack + peak heap reporting. The
 # actual #defines (USE_WOLFSSL_MEMORY, WOLFSSL_TRACK_MEMORY_VERBOSE,
@@ -262,10 +273,12 @@ else
   PUF_DEFS :=
 endif
 
-COMMON_DEFS := -DWOLFSSL_USER_SETTINGS $(CPU_DEFS) $(VARIANT_DEFS) $(BUILD_DEFS) $(PQC_DEFS) $(STACK_DEFS) $(GCM_DEFS) $(PUF_DEFS)
+COMMON_DEFS := -DWOLFSSL_USER_SETTINGS $(CPU_DEFS) $(VARIANT_DEFS) $(BUILD_DEFS) $(PQC_DEFS) $(SHA3_DEFS) $(STACK_DEFS) $(GCM_DEFS) $(PUF_DEFS)
 
+# Optimization level, overridable for miscompile/UB bisects: make OPT=-O1 ...
+OPT ?= -O2
 CFLAGS    = $(MCU_FLAGS) $(INCLUDES) $(COMMON_DEFS) \
-            -O2 -fomit-frame-pointer \
+            $(OPT) -fomit-frame-pointer \
             -ffunction-sections -fdata-sections \
             -Wall -Wno-unused-function -Wno-unused-variable \
             -fno-common -fno-strict-aliasing \
@@ -335,9 +348,14 @@ WC_SRC += \
 # WOLFSSL_ARMASM is active AND ML-KEM is enabled. PQC=1 enables ML-KEM,
 # so wire it in only there. (thumb2-sha3-asm_c.c also exists upstream
 # but adding it unconditionally pushes wl55 over its 256 KB flash, so
-# SHA3 stays on the C path via WC_SHA3_NO_ASM in user_settings.h.)
+# SHA3 stays on the C path via WC_SHA3_NO_ASM in user_settings.h.
+# SHA3_ASM=1 opts in on large-flash boards: 2.5x SHA-3/SHAKE and 2x
+# ML-DSA sign measured on the 4 MB v8.)
 ifeq ($(PQC),1)
   WC_SRC += $(WC_SRC_DIR)/port/arm/thumb2-mlkem-asm_c.c
+endif
+ifeq ($(SHA3_ASM),1)
+  WC_SRC += $(WC_SRC_DIR)/port/arm/thumb2-sha3-asm_c.c
 endif
 
 # Target entry point

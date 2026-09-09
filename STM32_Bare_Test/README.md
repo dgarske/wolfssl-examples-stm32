@@ -40,6 +40,7 @@ HW ECDSA-sign; `l552` and `h573` have no board available).
 | `h5`   | STM32H563ZI   | Validated 6/4 | NUCLEO-H563ZI. Full wolfcrypt_test PASS. HW HASH + RNG; ECC in software (H563 PKA ECDSA erratum, see note). FIXED boot fault (VOS0) |
 | `c031` | STM32C031C6   | Validated 6/4 | NUCLEO-C031C6. RNG-only (Cortex-M0+). Earlier no-UART was a flaky ST-LINK connection; re-seating the probe resolved it |
 | `u083` | STM32U083RC   | Not run 6/3   | NUCLEO-U083RC. RNG only. Not attached this session  |
+| `v8`   | STM32V873XJ   | Validated 8/25 | NUCLEO-V873XJ (Cortex-M85, 4 MB). Full wolfcrypt_test PASS + bench PASS; HW RNG + HASH(SHA-1/2) + SAES-AES + PKA ECDSA validated (SHA-3/SHAKE register-level only, wolfSSL integration pending ctx-save procedure); benched at 250/496/800 MHz. Secure-state image at 0x18000000/0x34000000 (no TZEN option byte). CMSIS header is GENERATED from the CubeProgrammer SVD -- see boards/v8/tools/svd2cmsis.py, output not checked in. No UART yet: board_putc writes a .noinit RAM ring buffer read back over SWD. I-cache on, D-cache off (breaks output). SYSCLK 250 MHz measured, CPU_FREQ_BOOST disabled |
 | `l552` | STM32L552ZE   | Not run 6/3   | NUCLEO-L552ZE-Q. Not attachable this session        |
 | `h573` | STM32H573ZI   | No board      | NUCLEO-H573ZI not available. Build OK               |
 

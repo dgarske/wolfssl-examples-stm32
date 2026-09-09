@@ -59,6 +59,8 @@
     #include "stm32wbaxx.h"
 #elif defined(STM32_BOARD_C562) || defined(STM32_BOARD_C5A3)
     #include "stm32c5xx.h"
+#elif defined(STM32_BOARD_V8)
+    #include "stm32v8xx.h"
 #else
     #error "boards/common/board_common.c: unknown STM32_BOARD_* family"
 #endif
@@ -221,9 +223,12 @@ int _write(int file, char *ptr, int len)
  * Cortex-M0/M0+ have no CFSR / HFSR / MMFAR / BFAR -- skip those reads
  * on architectures without them (gated on __CORTEX_M >= 3). */
 #if !defined(__ARM_ARCH_6M__)
-/* Externally-visible (naked asm trampoline jumps to it by name). */
+/* Externally-visible (naked asm trampoline jumps to it by name). Weak so a
+ * board can override it -- e.g. to record registers with raw stores before
+ * attempting printf, which itself hangs if the fault was taken inside
+ * printf/malloc. */
 void wc_fault_dump(uint32_t *frame, const char *which);
-void wc_fault_dump(uint32_t *frame, const char *which)
+__attribute__((weak)) void wc_fault_dump(uint32_t *frame, const char *which)
 {
     /* Stack frame on entry: R0,R1,R2,R3,R12,LR,PC,xPSR */
     printf("\n[FAULT] %s\n", which);
