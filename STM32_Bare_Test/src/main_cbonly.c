@@ -142,7 +142,8 @@ static int test_cbonly_ecdsa(WC_RNG* rng)
         goto cleanup;
     }
 
-    ret = wc_ecc_import_wrapped_private(&key, g_seed, (word32)sizeof(g_seed),
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, g_seed,
+                                        (word32)sizeof(g_seed),
                                         wrapped, 32, 32);
     if (ret != 0) {
         printf("  import wrapped private failed: %d\n", ret);

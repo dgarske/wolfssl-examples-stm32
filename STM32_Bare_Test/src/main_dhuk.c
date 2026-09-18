@@ -16,8 +16,18 @@
  *       a DHUK-wrapped scalar; verified with the public counterpart).
  *   [7] wc_Stm32_Aes_Wrap blob word order -- runs on both build paths so the
  *       shared WC_STM32_WRAP_ORDER_RAW blob can be compared bare vs CubeMX,
- *       and each build's default order is asserted (raw on bare, legacy
- *       byte-reversed on CubeMX, preserving wolfSSL 5.9.0 - 5.9.2 blobs).
+ *       and the default order is asserted to be raw on both (legacy is
+ *       reachable through _ex() for wolfSSL 5.9.0 - 5.9.2 blobs).
+ *   [8] Provisioning reference -- the minimal shape a product uses: data
+ *       encryption under a DHUK-derived key, an external AES-256 key kept
+ *       under a DHUK KEK, and ECDSA with a DHUK-wrapped private scalar.
+ *       Read this one first if you are integrating rather than testing.
+ *  [10] ECDSA sign from a wrapped scalar imported onto a key that never saw
+ *       keygen -- the runtime shape, and a guard that the import leaves the
+ *       key ready to sign.
+ *   [9] wc_Stm32_Aes_Wrap blob used as a key -- asserts a RAW blob unwraps
+ *       back to the key it wrapped, guarding the unwrap and blob-order fixes,
+ *       with the KEK alternative exercised beside it.
  *
  * A backend that is gated off or unavailable (CRYPTOCB_UNAVAILABLE / a
  * TZEN-secure-context timeout) is reported as an expected soft-PASS, not a
@@ -110,50 +120,67 @@ static int test_ecc_dhuk_setter(void)
     }
 
     /* Reject: NULL key / seed / wrapped pointers. */
-    ret = wc_ecc_import_wrapped_private(NULL, seed, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(NULL, ECC_SECP256R1, seed, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("reject key=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
-    ret = wc_ecc_import_wrapped_private(&key, NULL, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, NULL, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("reject seed=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, NULL, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        NULL, 32, 32);
     if (expect_ret("reject wrapped=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Good: 32-byte seed, 32-byte wrapped scalar, 32-byte plaintext (P-256). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("accept P-256 (32/32)", ret, 0) != 0) rc = -1;
 
     /* Boundary OK: P-521 plaintext (66) padded to 80, blob 80 == max. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 80, 66);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP521R1, seed, 32,
+                                        wrapped, 80, 66);
     if (expect_ret("accept P-521 (80/66)", ret, 0) != 0) rc = -1;
 
-    /* Boundary OK: minimum blob -- 1-byte plaintext padded to one AES block. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 16, 1);
-    if (expect_ret("accept min (16/1)", ret, 0) != 0) rc = -1;
+    /* Reject: plainLen must be the curve's scalar size. 1 byte matches no
+     * curve, and a scalar size that disagrees with curve_id is malformed. */
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 16, 1);
+    if (expect_ret("reject plain=1 vs P-256", ret, BAD_FUNC_ARG) != 0) rc = -1;
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 48, 48);
+    if (expect_ret("reject plain=48 vs P-256", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: seed length must be 32. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 16, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 16,
+                                        wrapped, 32, 32);
     if (expect_ret("reject seedSz=16", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: not a multiple of the AES block size. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 20, 20);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 20, 20);
     if (expect_ret("reject wrappedLen=20", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: zero-length wrapped blob. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 0, 0);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 0, 0);
     if (expect_ret("reject wrappedLen=0", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: larger than the on-key buffer (> 96). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 112, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 112, 32);
     if (expect_ret("reject wrappedLen=112", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
-    /* Reject: plaintext longer than the wrapped blob. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 32, 48);
-    if (expect_ret("reject plain=48 > wrapped=32", ret, BAD_FUNC_ARG) != 0)
+    /* Reject: plaintext longer than the wrapped blob. Every other argument is
+     * valid for P-256, so only the length relation under test can fail it. */
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 16, 32);
+    if (expect_ret("reject plain=32 > wrapped=16", ret, BAD_FUNC_ARG) != 0)
         rc = -1;
 
     /* Reject: wrapped blob larger than the plaintext padded to a full block
-     * (plain=16 -> roundup16 = 16, so a 48-byte blob is malformed). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 48, 16);
-    if (expect_ret("reject wrapped=48 > roundup16(plain=16)", ret,
+     * (plain=32 -> roundup16 = 32, so a 48-byte blob is malformed). */
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 48, 32);
+    if (expect_ret("reject wrapped=48 > roundup16(plain=32)", ret,
                    BAD_FUNC_ARG) != 0)
         rc = -1;
 
@@ -567,10 +594,10 @@ cleanup:
 /* [6] wc_Stm32_Aes_Wrap blob word order. Runs on BOTH build paths so the two
  * can be compared: WC_STM32_WRAP_ORDER_RAW must produce the same blob on
  * bare-metal and CubeMX/HAL (that is the whole point of the shared format),
- * while wc_Stm32_Aes_Wrap()'s default is deliberately per-build -- raw on
- * bare, byte-reversed on CubeMX -- so key material provisioned by wolfSSL
- * 5.9.0 - 5.9.2 still unwraps. Both blobs are printed so a bare run and a
- * CubeMX run can be diffed by eye or by script.
+ * and it is now what wc_Stm32_Aes_Wrap() defaults to on both. LEGACY stays
+ * reachable through wc_Stm32_Aes_Wrap_ex() for regenerating blobs from
+ * wolfSSL 5.9.0 - 5.9.2. Both blobs are printed so a bare run and a CubeMX
+ * run can be diffed by eye or by script.
  *
  * The wrap key here is a fixed software key (devId != WOLFSSL_DHUK_DEVID), not
  * the silicon DHUK, so the output is reproducible across chips and the check
@@ -645,25 +672,13 @@ static int test_dhuk_wrap_order(void)
     for (i = 0; i < sizeof(defBlob); i++) printf("%02x", defBlob[i]);
     printf("\n");
 
-#ifdef WOLFSSL_STM32_CUBEMX
-    /* CubeMX default is the legacy byte-reversed order, so it must NOT equal
-     * the shared raw blob -- if it did, the 5.9.x compatibility default has
-     * been lost. */
-    if (XMEMCMP(rawBlob, defBlob, sizeof(rawBlob)) == 0) {
-        printf("  CubeMX default equals RAW -- FAIL "
-               "(legacy 5.9.x blob order lost)\n");
-        return -1;
-    }
-    printf("  CubeMX default is the legacy (byte-reversed) order OK\n");
-#else
-    /* Bare default has always been the raw order. */
+    /* Both build paths now default to the raw order, so the plain wrap must
+     * match wrap_ex(RAW). Legacy stays reachable through _ex() only. */
     if (XMEMCMP(rawBlob, defBlob, sizeof(rawBlob)) != 0) {
-        printf("  bare default differs from RAW -- FAIL "
-               "(bare blob order changed)\n");
+        printf("  default order differs from RAW -- FAIL\n");
         return -1;
     }
-    printf("  bare default is the raw order OK\n");
-#endif
+    printf("  default order is RAW on this build OK\n");
     printf("  compare the RAW line against the other build to confirm "
            "cross-build interop\n");
     return 0;
@@ -764,7 +779,8 @@ static int test_dhuk_cryptocb_ecdsa(WC_RNG* rng)
     /* Import the wrapped scalar + seed, and route signing through DHUK by
      * setting the device id on the key. */
     kp.devId = WC_DHUK_DEVID;
-    ret = wc_ecc_import_wrapped_private(&kp, seed, (word32)sizeof(seed),
+    ret = wc_ecc_import_wrapped_private(&kp, ECC_SECP256R1, seed,
+                                        (word32)sizeof(seed),
                                        wrapped, 32, 32);
     if (ret != 0) {
         printf("  import wrapped private failed: %d\n", ret);
@@ -810,9 +826,382 @@ unreg:
     return ret;
 }
 #endif /* HAVE_ECC && WOLFSSL_STM32_PKA */
+
+#if (defined(HAVE_AES_ECB) || defined(WOLFSSL_AES_DIRECT)) && \
+    defined(HAVE_AES_CBC)
+/* [8] Provisioning reference -- the minimal shape a product uses, kept
+ * deliberately free of the probing and cross-checking the tests above do.
+ *
+ * The thing to understand before reading it: a 256-bit value handed to a
+ * WC_DHUK_DEVID Aes as its key is not used as a literal AES key. SAES loads
+ * it under the silicon DHUK and ciphers with the result, which never enters
+ * software. wc_Stm32_Aes_Wrap_ex(..., WC_STM32_WRAP_ORDER_RAW) is the
+ * inverse of that load, so it is how a chosen key is turned into a blob the
+ * device will accept. Three flows follow:
+ *
+ *   A -- Data encryption where the key does not have to be a chosen value.
+ *        Store 32 random bytes and let the hardware derive the working key
+ *        on every use. Nothing to provision. Prefer this.
+ *   B -- An externally supplied AES-256 key K that must be used verbatim.
+ *        Wrap K once with wc_Stm32_Aes_Wrap_ex(RAW), store the blob, and at
+ *        runtime hand the blob to a WC_DHUK_DEVID Aes as its key: the
+ *        hardware loads K into KEYR and ciphers with it, so K never exists
+ *        in software. The blob also matches ST's HAL_CRYPEx_WrapKey output.
+ *        B2 shows the alternative for when you need the key bytes back --
+ *        a 128-bit key, or key material that is not an AES key at all,
+ *        since the device only accepts a 32-byte key. There the DHUK-derived
+ *        key acts as a KEK and K is in RAM while in use.
+ *   C -- ECDSA with a DHUK-protected private key. An ECC scalar cannot live
+ *        in KEYR, so it uses the B2 KEK wrap; the scalar is unwrapped into a
+ *        short-lived buffer for the PKA. wc_ecc_sign_hash() is the ordinary
+ *        API from there.
+ *
+ * In a real product, the wrapping half of B and C happens once in the
+ * factory and only the blob plus the seed reach flash. Both halves run here
+ * so the example is self-contained. */
+static int dhuk_provision_example(WC_RNG* rng)
+{
+    /* What a product would keep in flash. */
+    static byte seed[32];       /* per-key derivation seed -- not secret     */
+    static byte wrappedKey[32]; /* flow B: K encrypted under the derived key */
+    static byte wrappedPriv[32];/* flow C: ECC scalar, same treatment        */
+
+    static const byte pt[32] = {
+        0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,
+        0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a,
+        0xae,0x2d,0x8a,0x57,0x1e,0x03,0xac,0x9c,
+        0x9e,0xb7,0x6f,0xac,0x45,0xaf,0x8e,0x51
+    };
+    /* CBC needs a fresh unpredictable IV per encryption; it is not secret and
+     * is stored or transmitted alongside the ciphertext. Generated here rather
+     * than hard-coded so this reads as the production pattern. */
+    byte iv[16];
+    /* Flow B only: a key the application does not get to choose. */
+    static const byte extKey[32] = {
+        0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,
+        0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81,
+        0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,
+        0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4
+    };
+    Aes    aes;
+    byte   ct[32];
+    byte   rt[32];
+    byte   recovered[32];
+    int    ret;
+    int    dhukReg = 0;
+    int    aesReg = 0;
+
+    XMEMSET(ct, 0, sizeof(ct));
+    XMEMSET(rt, 0, sizeof(rt));
+    XMEMSET(recovered, 0, sizeof(recovered));
+
+    /* One-time: make the DHUK device available at WC_DHUK_DEVID. */
+    ret = wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    if (ret != 0) {
+        printf("  wc_Stm32_DhukRegister failed: %d\n", ret);
+        return ret;
+    }
+    dhukReg = 1;
+
+    /* Provisioning step 0: the seed is just random bytes. It is stored in
+     * the clear -- it is worthless on any other chip, because the key it
+     * derives depends on this die's DHUK. */
+    ret = wc_RNG_GenerateBlock(rng, iv, sizeof(iv));
+    if (ret != 0) {
+        printf("  wc_RNG_GenerateBlock(iv) failed: %d\n", ret);
+        goto cleanup;
+    }
+    ret = wc_RNG_GenerateBlock(rng, seed, sizeof(seed));
+    if (ret != 0) {
+        printf("  seed generation failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    /* ---- A: encrypt with a DHUK-derived key (no wrapping involved) ----
+     * The 32 bytes handed to wc_AesSetKey are the SEED, not a literal key:
+     * a WC_DHUK_DEVID Aes always treats a 256-bit key that way. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, sizeof(seed), iv, AES_ENCRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesCbcEncrypt(&aes, ct, pt, (word32)sizeof(pt));
+    }
+    wc_AesFree(&aes);
+    if (is_expected_gated(ret)) {
+        printf("  DHUK backend gated/unavailable (ret=%d) -- skipping\n", ret);
+        ret = 0; /* soft-PASS */
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  [A] DHUK CBC encrypt failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    /* Decrypting is the same call with the same seed. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, sizeof(seed), iv, AES_DECRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesCbcDecrypt(&aes, rt, ct, (word32)sizeof(ct));
+    }
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  [A] DHUK CBC decrypt failed: %d\n", ret);
+        goto cleanup;
+    }
+    if (XMEMCMP(rt, pt, sizeof(pt)) != 0) {
+        printf("  [A] DHUK CBC round-trip mismatch -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+    printf("  [A] seed-keyed AES-CBC round-trip OK "
+           "(key derived in HW, never in SW)\n");
+
+    /* ---- B: protect an externally supplied AES-256 key ----
+     * Factory half: wrap K under the silicon DHUK. devId WOLFSSL_DHUK_DEVID
+     * selects the DHUK as the wrapping key; RAW is the order the device
+     * consumes, and is what ST's HAL_CRYPEx_WrapKey produces. */
+    ret = wc_AesInit(&aes, NULL, WOLFSSL_DHUK_DEVID);
+    if (ret == 0) {
+        word32 blobSz = (word32)sizeof(wrappedKey);
+        ret = wc_Stm32_Aes_Wrap_ex(&aes, extKey, (word32)sizeof(extKey),
+                                   wrappedKey, &blobSz, NULL, 0,
+                                   WC_STM32_WRAP_ORDER_RAW);
+        if (ret == 0 && blobSz != sizeof(wrappedKey)) {
+            ret = -1;
+        }
+    }
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  [B] key wrap failed: %d\n", ret);
+        goto cleanup;
+    }
+    /* wrappedKey goes to flash; the clear K is discarded. No seed needed --
+     * the blob is the key material, bound to this die. */
+
+    /* Runtime half: hand the blob to the DHUK device as the Aes key. The
+     * hardware loads K into KEYR; K never appears in software. */
+    XMEMSET(ct, 0, sizeof(ct));
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, wrappedKey, (word32)sizeof(wrappedKey), NULL,
+                           AES_ENCRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesEcbEncrypt(&aes, ct, pt, (word32)sizeof(pt));
+    }
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  [B] encrypt under the wrapped key failed: %d\n", ret);
+        goto cleanup;
+    }
+    printf("  [B] external AES-256 key used from its wrapped blob OK "
+           "(K never in software)\n");
+
+    /* ---- B2: when you need the key bytes back ----
+     * The device only accepts a 32-byte key, so a 128-bit key -- or key
+     * material that is not an AES key, as in flow C -- cannot be loaded into
+     * KEYR. Use the DHUK-derived key as a KEK instead and accept that K is in
+     * RAM while in use. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, sizeof(seed), NULL, AES_ENCRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesEcbEncrypt(&aes, wrappedKey, extKey,
+                               (word32)sizeof(extKey));
+    }
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  [B2] KEK wrap failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, sizeof(seed), NULL, AES_DECRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesEcbDecrypt(&aes, recovered, wrappedKey,
+                               (word32)sizeof(wrappedKey));
+    }
+    wc_AesFree(&aes);
+    if (ret != 0) {
+        printf("  [B2] KEK unwrap failed: %d\n", ret);
+        goto cleanup;
+    }
+    if (XMEMCMP(recovered, extKey, sizeof(extKey)) != 0) {
+        printf("  [B2] unwrapped key != K -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+
+    ret = wc_Stm32_AesRegister(WOLFSSL_STM32_AES_DEVID);
+    if (ret != 0) {
+        printf("  wc_Stm32_AesRegister failed: %d\n", ret);
+        goto cleanup;
+    }
+    aesReg = 1;
+
+    XMEMSET(ct, 0, sizeof(ct));
+    ret = wc_AesInit(&aes, NULL, WOLFSSL_STM32_AES_DEVID);
+    if (ret == 0) {
+        /* Used verbatim on this devId -- no derivation. */
+        ret = wc_AesSetKey(&aes, recovered, sizeof(recovered), NULL,
+                           AES_ENCRYPTION);
+    }
+    if (ret == 0) {
+        ret = wc_AesEcbEncrypt(&aes, ct, pt, (word32)sizeof(pt));
+    }
+    wc_AesFree(&aes);
+    wc_ForceZero(recovered, sizeof(recovered));
+    if (ret != 0) {
+        printf("  [B2] plaintext-key AES failed: %d\n", ret);
+        goto cleanup;
+    }
+    printf("  [B2] same key recovered under a KEK and run verbatim OK "
+           "(K in RAM only while in use)\n");
+
+#if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
+    /* ---- C: ECDSA sign with a DHUK-protected private key ---- */
+    {
+        static const byte hash[32] = {
+            0x9f,0x86,0xd0,0x81,0x88,0x4c,0x7d,0x65,
+            0x9a,0x2f,0xea,0xa0,0xc5,0x5a,0xd0,0x15,
+            0xa3,0xbf,0x4f,0x1b,0x2b,0x0b,0x82,0x2c,
+            0xd1,0x5d,0x6c,0x15,0xb0,0xf0,0x0a,0x08
+        };
+        ecc_key key;
+        ecc_key signer;
+        byte    priv[32];
+        byte    pub[65];
+        byte    sig[80];
+        word32  privSz = (word32)sizeof(priv);
+        word32  pubSz  = (word32)sizeof(pub);
+        word32  sigLen = (word32)sizeof(sig);
+        int     verify = 0;
+        int     haveKey = 0;
+        int     haveSigner = 0;
+
+        ret = wc_ecc_init(&key);
+        if (ret != 0) {
+            printf("  [C] wc_ecc_init failed: %d\n", ret);
+            goto cleanup;
+        }
+        haveKey = 1;
+
+        /* Factory half: generate the key pair, export the public key, wrap
+         * the scalar with the B2 KEK, and forget the clear scalar. */
+        ret = wc_ecc_make_key_ex(rng, 32, &key, ECC_SECP256R1);
+        if (ret == 0) {
+            ret = wc_ecc_export_private_only(&key, priv, &privSz);
+        }
+        if (ret == 0 && privSz != 32u) {
+            ret = -1;
+        }
+        if (ret == 0) {
+            ret = wc_ecc_export_x963(&key, pub, &pubSz);
+        }
+        if (ret == 0) {
+            ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+            if (ret == 0) {
+                ret = wc_AesSetKey(&aes, seed, sizeof(seed), NULL,
+                                   AES_ENCRYPTION);
+                if (ret == 0) {
+                    ret = wc_AesEcbEncrypt(&aes, wrappedPriv, priv, 32);
+                }
+                wc_AesFree(&aes);
+            }
+        }
+        wc_ForceZero(priv, sizeof(priv));
+        if (ret != 0) {
+            printf("  [C] scalar wrap failed: %d\n", ret);
+            goto eccCleanup;
+        }
+        /* wrappedPriv + seed + the public key go to flash. The provisioning
+         * key is released here: reusing it would leave the clear scalar in
+         * key->k, and wc_ecc_sign_hash() falls back to software when the
+         * callback declines, so a broken wrapped path could still pass. */
+        wc_ecc_free(&key);
+        haveKey = 0;
+
+        /* Runtime half: a key that has only ever seen wc_ecc_init(). Hand it
+         * the blob and the seed, then sign with the ordinary API. The scalar
+         * is unwrapped into a short-lived buffer for the PKA and scrubbed --
+         * on U3 the CCB path (WOLFSSL_STM32_CCB) keeps it out of software
+         * entirely. */
+        ret = wc_ecc_init(&signer);
+        if (ret != 0) {
+            printf("  [C] signer init failed: %d\n", ret);
+            goto eccCleanup;
+        }
+        haveSigner = 1;
+        signer.devId = WC_DHUK_DEVID;
+        ret = wc_ecc_import_wrapped_private(&signer, ECC_SECP256R1, seed,
+                                            (word32)sizeof(seed),
+                                            wrappedPriv, 32, 32);
+        if (ret == 0) {
+            ret = wc_ecc_sign_hash(hash, (word32)sizeof(hash), sig, &sigLen,
+                                   rng, &signer);
+        }
+        if (ret != 0) {
+            printf("  [C] DHUK ECDSA sign failed: %d\n", ret);
+            goto eccCleanup;
+        }
+
+        /* Verify with a public-only key built from the stored public bytes,
+         * so nothing private is in play on the verifying side. */
+        ret = wc_ecc_init(&key);
+        if (ret == 0) {
+            haveKey = 1;
+            ret = wc_ecc_import_x963_ex(pub, pubSz, &key, ECC_SECP256R1);
+        }
+        if (ret == 0) {
+            ret = wc_ecc_verify_hash(sig, sigLen, hash, (word32)sizeof(hash),
+                                     &verify, &key);
+        }
+        if (ret != 0) {
+            printf("  [C] DHUK ECDSA verify error: %d\n", ret);
+            goto eccCleanup;
+        }
+        if (verify != 1) {
+            printf("  [C] DHUK ECDSA verify FAILED (sig invalid)\n");
+            ret = -1;
+            goto eccCleanup;
+        }
+        printf("  [C] ECDSA signed with a DHUK-wrapped scalar, "
+               "verified with the public key\n");
+
+    eccCleanup:
+        if (haveSigner) {
+            wc_ecc_free(&signer);
+        }
+        if (haveKey) {
+            wc_ecc_free(&key);
+        }
+        if (ret != 0) {
+            goto cleanup;
+        }
+    }
+#endif /* HAVE_ECC && WOLFSSL_STM32_PKA */
+
+cleanup:
+    wc_ForceZero(recovered, sizeof(recovered));
+    if (aesReg) {
+        wc_Stm32_AesUnRegister(WOLFSSL_STM32_AES_DEVID);
+    }
+    if (dhukReg) {
+        wc_Stm32_DhukUnRegister(WC_DHUK_DEVID);
+    }
+    return ret;
+}
+#endif /* (HAVE_AES_ECB || WOLFSSL_AES_DIRECT) && HAVE_AES_CBC */
 #endif /* WOLF_CRYPTO_CB */
 
-#ifdef WOLFSSL_STM32_DHUK_UNWRAP
+
+/* Shared hex dump for the blob/ciphertext comparisons below. */
 static void dhuk_print_hex(const char* label, const byte* p, word32 sz)
 {
     word32 i;
@@ -823,6 +1212,303 @@ static void dhuk_print_hex(const char* label, const byte* p, word32 sz)
     printf("\n");
 }
 
+#if defined(WOLF_CRYPTO_CB) && \
+    (defined(HAVE_AES_ECB) || defined(WOLFSSL_AES_DIRECT))
+
+/* Runtime half of the pattern under test: treat `blob` as the key on a
+ * WC_DHUK_DEVID Aes and decrypt one block. Sets *isK when the recovered
+ * plaintext equals the original, i.e. when the hardware really did put the
+ * wrapped key back into KEYR. */
+static int dhuk_try_blob_as_key(const byte* blob, const byte* enc,
+    const byte* ptOrig, byte* dec, int* isK)
+{
+    Aes aes;
+    int ret;
+
+    *isK = 0;
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = wc_AesSetKey(&aes, blob, 32, NULL, AES_DECRYPTION);
+    if (ret == 0) {
+        ret = wc_AesEcbDecrypt(&aes, dec, enc, WC_AES_BLOCK_SIZE);
+    }
+    wc_AesFree(&aes);
+    if (ret == 0 && XMEMCMP(dec, ptOrig, WC_AES_BLOCK_SIZE) == 0) {
+        *isK = 1;
+    }
+    return ret;
+}
+
+/* [9] A wc_Stm32_Aes_Wrap() blob must unwrap back to the key it wrapped.
+ *
+ * This is the shape [8] flow B uses: wrap an externally supplied AES-256 key
+ * K at provisioning, store the blob, then at runtime hand the blob to
+ * wc_AesSetKey() on a WC_DHUK_DEVID Aes. The hardware loads K into KEYR and
+ * ciphers with it, so K never appears in software.
+ *
+ * Guards two defects that both produced a silent wrong answer -- every call
+ * returned 0 and the application saw wrong plaintext rather than an error.
+ * The unwrap loaded a corrupted key (CR.DATATYPE had to be 00 on the key
+ * path, and CR writes made while SR.BUSY is high are dropped, so EN was set
+ * too early); and on the CubeMX build wc_Stm32_Aes_Wrap() used to default to
+ * WC_STM32_WRAP_ORDER_LEGACY, whose byte-reversed blob does not round-trip.
+ * Both are fixed, so both orders are still produced here and the RAW one is
+ * asserted to recover K.
+ *
+ * The KEK pattern is exercised at the end as the alternative for key
+ * material the device cannot load into KEYR -- see [8] flow B2. */
+static int test_dhuk_wrap_as_key(void)
+{
+    /* The externally supplied key the application must use verbatim
+     * (FIPS-197 AES-256), and one NIST SP 800-38A plaintext block. */
+    static const byte extKey[32] = {
+        0x60,0x3d,0xeb,0x10,0x15,0xca,0x71,0xbe,
+        0x2b,0x73,0xae,0xf0,0x85,0x7d,0x77,0x81,
+        0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,
+        0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4
+    };
+    static const byte ptOrig[WC_AES_BLOCK_SIZE] = {
+        0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,
+        0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a
+    };
+    /* Per-key derivation seed for the KEK contrast. Not secret. */
+    static const byte seed[32] = {
+        0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+        0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,
+        0x10,0x32,0x54,0x76,0x98,0xba,0xdc,0xfe,
+        0xef,0xcd,0xab,0x89,0x67,0x45,0x23,0x01
+    };
+    Aes    aes;
+    byte   enc[WC_AES_BLOCK_SIZE];
+    byte   dec[WC_AES_BLOCK_SIZE];
+    byte   blobDef[32];
+    byte   blobRaw[32];
+    byte   kekBlob[32];
+    byte   recovered[32];
+    word32 blobDefSz = (word32)sizeof(blobDef);
+    word32 blobRawSz = (word32)sizeof(blobRaw);
+    int    dhukReg = 0;
+    int    aesReg  = 0;
+    int    defIsK  = 0;
+    int    rawIsK  = 0;
+    int    ret;
+
+    XMEMSET(enc,       0, sizeof(enc));
+    XMEMSET(dec,       0, sizeof(dec));
+    XMEMSET(blobDef,   0, sizeof(blobDef));
+    XMEMSET(blobRaw,   0, sizeof(blobRaw));
+    XMEMSET(kekBlob,   0, sizeof(kekBlob));
+    XMEMSET(recovered, 0, sizeof(recovered));
+
+    /* The ciphertext the key-install process supplies: a true AES-256-ECB of
+     * ptOrig under K, computed here on the ordinary (non-DHUK) engine. */
+    ret = wc_AesInit(&aes, NULL, INVALID_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, extKey, (word32)sizeof(extKey), NULL,
+                           AES_ENCRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbEncrypt(&aes, enc, ptOrig, (word32)sizeof(ptOrig));
+        }
+        wc_AesFree(&aes);
+    }
+    if (ret != 0) {
+        printf("  reference AES-256-ECB under K failed: %d\n", ret);
+        return ret;
+    }
+    dhuk_print_hex("reference enc = AES-ECB(K, pt)", enc, sizeof(enc));
+
+    ret = wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    if (ret != 0) {
+        printf("  wc_Stm32_DhukRegister failed: %d\n", ret);
+        return ret;
+    }
+    dhukReg = 1;
+
+    /* Provisioning half, exactly as an integrator writes it: wrap K under the
+     * silicon DHUK. The two spellings are deliberate and both are 808:
+     * wc_Stm32_Aes_Wrap() reads aes->devId as a wrap-key-source marker and
+     * wants WOLFSSL_DHUK_DEVID for KEYSEL=HW, while the crypto-callback
+     * device is registered at WC_DHUK_DEVID above. */
+    ret = wc_AesInit(&aes, NULL, WOLFSSL_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_Stm32_Aes_Wrap(&aes, extKey, (word32)sizeof(extKey),
+                                blobDef, &blobDefSz, NULL, 0);
+        wc_AesFree(&aes);
+    }
+    if (is_expected_gated(ret)) {
+        printf("  wc_Stm32_Aes_Wrap gated on this silicon (%d) -- skipping\n",
+               ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  wc_Stm32_Aes_Wrap (default order) failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    ret = wc_AesInit(&aes, NULL, WOLFSSL_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_Stm32_Aes_Wrap_ex(&aes, extKey, (word32)sizeof(extKey),
+                                   blobRaw, &blobRawSz, NULL, 0,
+                                   WC_STM32_WRAP_ORDER_RAW);
+        wc_AesFree(&aes);
+    }
+    if (is_expected_gated(ret)) {
+        printf("  wc_Stm32_Aes_Wrap_ex(RAW) gated on this silicon (%d) -- "
+               "skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  wc_Stm32_Aes_Wrap_ex(RAW) failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    /* Use the sizes the API reported, not the buffer sizes, so a short write
+     * cannot be printed as trailing garbage or used as a 32-byte key. */
+    if (blobDefSz != sizeof(blobDef) || blobRawSz != sizeof(blobRaw)) {
+        printf("  wrap returned unexpected size (def=%lu raw=%lu, want %lu) "
+               "-- FAIL\n", (unsigned long)blobDefSz, (unsigned long)blobRawSz,
+               (unsigned long)sizeof(blobDef));
+        ret = -1;
+        goto cleanup;
+    }
+
+    dhuk_print_hex("blob (this build's default order)", blobDef, blobDefSz);
+    dhuk_print_hex("blob (WC_STM32_WRAP_ORDER_RAW)   ", blobRaw, blobRawSz);
+
+    /* Runtime half: hand each blob to the DHUK device as if it were a key. */
+    ret = dhuk_try_blob_as_key(blobDef, enc, ptOrig, dec, &defIsK);
+    if (is_expected_gated(ret)) {
+        printf("  blob-as-key (default order) gated on this silicon "
+               "(%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  blob-as-key (default order) returned %d\n", ret);
+        goto cleanup;
+    }
+    printf("  blob-as-key, default order: rc=0, plaintext %s\n",
+           defIsK ? "MATCHES pt_orig" : "does NOT match pt_orig");
+    dhuk_print_hex("  got", dec, sizeof(dec));
+
+    ret = dhuk_try_blob_as_key(blobRaw, enc, ptOrig, dec, &rawIsK);
+    if (is_expected_gated(ret)) {
+        printf("  blob-as-key (RAW order) gated on this silicon "
+               "(%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  blob-as-key (RAW order) returned %d\n", ret);
+        goto cleanup;
+    }
+    printf("  blob-as-key, RAW order:     rc=0, plaintext %s\n",
+           rawIsK ? "MATCHES pt_orig" : "does NOT match pt_orig");
+    dhuk_print_hex("  got", dec, sizeof(dec));
+
+    /* The RAW blob must round-trip: wc_Stm32_Aes_Wrap is the inverse of the
+     * SAES wrapped-key load, so handing the blob back as the key recovers K.
+     * Regression guard for the unwrap fix (SR.BUSY must be waited out after
+     * KEYSEL=HW latches, and the key path runs with CR.DATATYPE = 00). */
+    if (!rawIsK) {
+        printf("  RAW blob did not unwrap back to K -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+    printf("  RAW blob unwrapped back to K OK (wrap/unwrap are inverses)\n");
+    /* The plain wrap now defaults to RAW on both build paths, so the default
+     * blob must round-trip too. */
+    if (!defIsK) {
+        printf("  default-order blob did not unwrap back to K -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+
+    /* Contrast: the KEK pattern, which does round-trip. Provision by
+     * ECB-encrypting K under the seed-derived key; recover it at runtime with
+     * the same seed; then run K verbatim on the plaintext-key device. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, (word32)sizeof(seed), NULL,
+                           AES_ENCRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbEncrypt(&aes, kekBlob, extKey,
+                                   (word32)sizeof(extKey));
+        }
+        wc_AesFree(&aes);
+    }
+    if (ret != 0) {
+        printf("  KEK wrap of K failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, (word32)sizeof(seed), NULL,
+                           AES_DECRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbDecrypt(&aes, recovered, kekBlob,
+                                   (word32)sizeof(kekBlob));
+        }
+        wc_AesFree(&aes);
+    }
+    if (ret != 0) {
+        printf("  KEK unwrap of K failed: %d\n", ret);
+        goto cleanup;
+    }
+    if (XMEMCMP(recovered, extKey, sizeof(extKey)) != 0) {
+        printf("  KEK unwrap did not recover K -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+    printf("  KEK round-trip recovered K OK\n");
+
+    ret = wc_Stm32_AesRegister(WOLFSSL_STM32_AES_DEVID);
+    if (ret != 0) {
+        printf("  wc_Stm32_AesRegister failed: %d\n", ret);
+        goto cleanup;
+    }
+    aesReg = 1;
+
+    XMEMSET(dec, 0, sizeof(dec));
+    ret = wc_AesInit(&aes, NULL, WOLFSSL_STM32_AES_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, recovered, (word32)sizeof(recovered), NULL,
+                           AES_DECRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbDecrypt(&aes, dec, enc, (word32)sizeof(enc));
+        }
+        wc_AesFree(&aes);
+    }
+    if (ret != 0) {
+        printf("  plaintext-key decrypt failed: %d\n", ret);
+        goto cleanup;
+    }
+    if (XMEMCMP(dec, ptOrig, sizeof(ptOrig)) != 0) {
+        printf("  plaintext-key decrypt did not recover pt_orig -- FAIL\n");
+        ret = -1;
+        goto cleanup;
+    }
+    printf("  KEK pattern decrypted enc back to pt_orig OK "
+           "(the alternative when the key bytes are needed)\n");
+
+cleanup:
+    wc_ForceZero(recovered, sizeof(recovered));
+    if (aesReg) {
+        wc_Stm32_AesUnRegister(WOLFSSL_STM32_AES_DEVID);
+    }
+    if (dhukReg) {
+        wc_Stm32_DhukUnRegister(WC_DHUK_DEVID);
+    }
+    return ret;
+}
+#endif /* WOLF_CRYPTO_CB && (HAVE_AES_ECB || WOLFSSL_AES_DIRECT) */
+
+#ifdef WOLFSSL_STM32_DHUK_UNWRAP
 /* [6] wc_Stm32_Aes_DhukOp_ex -- the provisioning flow the API exists for:
  * stage a 256-bit seed, let SAES turn (seed, silicon DHUK) into a key
  * encryption key inside KEYR, and wrap/unwrap other key material with it.
@@ -1136,7 +1822,149 @@ static int test_dhuk_op_roundtrip(void)
 }
 #endif /* WOLFSSL_STM32_DHUK_UNWRAP */
 
+#if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
+/* [10] Sign with a wrapped scalar imported onto a key that was never used for
+ * keygen -- the shape a product actually has at runtime, where provisioning
+ * happened in the factory and only the blob plus the seed reach flash. The
+ * surrounding ECDSA test starts from wc_ecc_make_key_ex(), which hides whether
+ * wc_ecc_import_wrapped_private() leaves the key ready to sign; this does not.
+ * The signature is verified against the public counterpart, so a scalar that
+ * unwrapped to the wrong value fails here rather than passing silently. */
+static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
+{
+    static const byte seed[32] = {
+        0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+        0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,
+        0x10,0x32,0x54,0x76,0x98,0xba,0xdc,0xfe,
+        0xef,0xcd,0xab,0x89,0x67,0x45,0x23,0x01
+    };
+    static const byte hash[32] = {
+        0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+        0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,
+        0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
+        0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20
+    };
+    ecc_key kp;
+    ecc_key signer;
+    ecc_key verifier;
+    Aes     aes;
+    byte    priv[32];
+    byte    wrapped[32];
+    byte    pub[65];
+    byte    sig[80];
+    word32  privSz = (word32)sizeof(priv);
+    word32  pubSz  = (word32)sizeof(pub);
+    word32  sigLen = (word32)sizeof(sig);
+    int     verify = 0;
+    int     dhukReg = 0;
+    int     ret;
+
+    ret = wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    if (ret != 0) {
+        printf("  DHUK register failed: %d\n", ret);
+        return ret;
+    }
+    dhukReg = 1;
+
+    /* Factory half: keypair, export the scalar and the public key. */
+    ret = wc_ecc_init(&kp);
+    if (ret != 0) {
+        goto cleanup;
+    }
+    ret = wc_ecc_make_key_ex(rng, 32, &kp, ECC_SECP256R1);
+    if (ret == 0) {
+        ret = wc_ecc_export_private_only(&kp, priv, &privSz);
+    }
+    if (ret == 0) {
+        ret = wc_ecc_export_x963(&kp, pub, &pubSz);
+    }
+    wc_ecc_free(&kp);
+    if (ret != 0 || privSz != 32u) {
+        printf("  provisioning failed: %d (privSz %lu)\n", ret,
+               (unsigned long)privSz);
+        ret = (ret != 0) ? ret : -1;
+        goto cleanup;
+    }
+
+    /* Wrap the scalar under the DHUK-derived key. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, (word32)sizeof(seed), NULL,
+                           AES_ENCRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbEncrypt(&aes, wrapped, priv, 32);
+        }
+        wc_AesFree(&aes);
+    }
+    wc_ForceZero(priv, sizeof(priv));
+    if (is_expected_gated(ret)) {
+        printf("  KEK wrap gated on this silicon (%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  KEK wrap failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    /* Runtime half: a key that has only ever seen wc_ecc_init(). */
+    ret = wc_ecc_init(&signer);
+    if (ret != 0) {
+        goto cleanup;
+    }
+    signer.devId = WC_DHUK_DEVID;
+    ret = wc_ecc_import_wrapped_private(&signer, ECC_SECP256R1, seed,
+                                        (word32)sizeof(seed), wrapped, 32, 32);
+    if (ret == 0) {
+        ret = wc_ecc_sign_hash(hash, (word32)sizeof(hash), sig, &sigLen, rng,
+                               &signer);
+    }
+    wc_ecc_free(&signer);
+    if (is_expected_gated(ret)) {
+        printf("  DHUK sign gated on this silicon (%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  sign after import failed: %d "
+               "(-170 means the import left no curve on the key)\n", ret);
+        goto cleanup;
+    }
+    printf("  signed with an imported scalar, no keygen (%lu-byte sig)\n",
+           (unsigned long)sigLen);
+
+    /* The signature must verify against the provisioned public key. */
+    ret = wc_ecc_init(&verifier);
+    if (ret == 0) {
+        ret = wc_ecc_import_x963_ex(pub, pubSz, &verifier, ECC_SECP256R1);
+        if (ret == 0) {
+            ret = wc_ecc_verify_hash(sig, sigLen, hash, (word32)sizeof(hash),
+                                     &verify, &verifier);
+        }
+        wc_ecc_free(&verifier);
+    }
+    if (ret != 0 || verify != 1) {
+        printf("  signature did not verify (ret=%d verify=%d) -- FAIL\n",
+               ret, verify);
+        ret = (ret != 0) ? ret : -1;
+        goto cleanup;
+    }
+    printf("  verifies against the provisioned public key OK\n");
+
+cleanup:
+    /* Scrub in the common exit: an early failure in the export or public-key
+     * step jumps here with priv possibly partially written. */
+    wc_ForceZero(priv, sizeof(priv));
+    if (dhukReg) {
+        wc_Stm32_DhukUnRegister(WC_DHUK_DEVID);
+    }
+    return ret;
+}
+#endif /* HAVE_ECC && WOLFSSL_STM32_PKA */
+
 #endif /* WOLFSSL_DHUK && (BARE || CUBEMX) && WC_STM32_HAS_DHUK */
+
+
 
 int main(void)
 {
@@ -1204,6 +2032,13 @@ int main(void)
             ret = test_dhuk_cryptocb_ecdsa(&rng);
         }
 #endif
+#if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
+        if (ret == 0) {
+            printf("\n[10] ECDSA sign from an imported wrapped scalar "
+                   "(no keygen):\n");
+            ret = test_dhuk_ecdsa_import_sign(&rng);
+        }
+#endif
 #endif
 #ifdef WOLFSSL_STM32_DHUK_UNWRAP
         if (ret == 0) {
@@ -1215,6 +2050,21 @@ int main(void)
             printf("\n[7] wc_Stm32_Aes_Wrap blob word order:\n");
             ret = test_dhuk_wrap_order();
         }
+#if defined(WOLF_CRYPTO_CB) && \
+    (defined(HAVE_AES_ECB) || defined(WOLFSSL_AES_DIRECT))
+        if (ret == 0) {
+            printf("\n[9] wc_Stm32_Aes_Wrap blob used as a key "
+                   "round-trips back to K:\n");
+            ret = test_dhuk_wrap_as_key();
+        }
+#endif
+#if defined(WOLF_CRYPTO_CB) && defined(HAVE_AES_CBC) && \
+    (defined(HAVE_AES_ECB) || defined(WOLFSSL_AES_DIRECT))
+        if (ret == 0) {
+            printf("\n[8] Provisioning reference (start here):\n");
+            ret = dhuk_provision_example(&rng);
+        }
+#endif
 
         wc_FreeRng(&rng);
     }
