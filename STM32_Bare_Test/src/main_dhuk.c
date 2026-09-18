@@ -22,6 +22,9 @@
  *       encryption under a DHUK-derived key, an external AES-256 key kept
  *       under a DHUK KEK, and ECDSA with a DHUK-wrapped private scalar.
  *       Read this one first if you are integrating rather than testing.
+ *  [10] ECDSA sign from a wrapped scalar imported onto a key that never saw
+ *       keygen -- the runtime shape, and a guard that the import leaves the
+ *       key ready to sign.
  *   [9] wc_Stm32_Aes_Wrap blob used as a key -- the integration pattern that
  *       silently returns wrong plaintext, reproduced so the failure is
  *       visible, with the KEK pattern that works asserted beside it.
@@ -117,49 +120,65 @@ static int test_ecc_dhuk_setter(void)
     }
 
     /* Reject: NULL key / seed / wrapped pointers. */
-    ret = wc_ecc_import_wrapped_private(NULL, seed, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(NULL, ECC_SECP256R1, seed, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("reject key=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
-    ret = wc_ecc_import_wrapped_private(&key, NULL, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, NULL, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("reject seed=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, NULL, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        NULL, 32, 32);
     if (expect_ret("reject wrapped=NULL", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Good: 32-byte seed, 32-byte wrapped scalar, 32-byte plaintext (P-256). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 32, 32);
     if (expect_ret("accept P-256 (32/32)", ret, 0) != 0) rc = -1;
 
     /* Boundary OK: P-521 plaintext (66) padded to 80, blob 80 == max. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 80, 66);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP521R1, seed, 32,
+                                        wrapped, 80, 66);
     if (expect_ret("accept P-521 (80/66)", ret, 0) != 0) rc = -1;
 
-    /* Boundary OK: minimum blob -- 1-byte plaintext padded to one AES block. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 16, 1);
-    if (expect_ret("accept min (16/1)", ret, 0) != 0) rc = -1;
+    /* Reject: plainLen must be the curve's scalar size. 1 byte matches no
+     * curve, and a scalar size that disagrees with curve_id is malformed. */
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 16, 1);
+    if (expect_ret("reject plain=1 vs P-256", ret, BAD_FUNC_ARG) != 0) rc = -1;
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 48, 48);
+    if (expect_ret("reject plain=48 vs P-256", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: seed length must be 32. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 16, wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 16,
+                                        wrapped, 32, 32);
     if (expect_ret("reject seedSz=16", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: not a multiple of the AES block size. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 20, 20);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 20, 20);
     if (expect_ret("reject wrappedLen=20", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: zero-length wrapped blob. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 0, 0);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 0, 0);
     if (expect_ret("reject wrappedLen=0", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: larger than the on-key buffer (> 96). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 112, 32);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 112, 32);
     if (expect_ret("reject wrappedLen=112", ret, BAD_FUNC_ARG) != 0) rc = -1;
 
     /* Reject: plaintext longer than the wrapped blob. */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 32, 48);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 32, 48);
     if (expect_ret("reject plain=48 > wrapped=32", ret, BAD_FUNC_ARG) != 0)
         rc = -1;
 
     /* Reject: wrapped blob larger than the plaintext padded to a full block
      * (plain=16 -> roundup16 = 16, so a 48-byte blob is malformed). */
-    ret = wc_ecc_import_wrapped_private(&key, seed, 32, wrapped, 48, 16);
+    ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed, 32,
+                                        wrapped, 48, 16);
     if (expect_ret("reject wrapped=48 > roundup16(plain=16)", ret,
                    BAD_FUNC_ARG) != 0)
         rc = -1;
@@ -759,7 +778,8 @@ static int test_dhuk_cryptocb_ecdsa(WC_RNG* rng)
     /* Import the wrapped scalar + seed, and route signing through DHUK by
      * setting the device id on the key. */
     kp.devId = WC_DHUK_DEVID;
-    ret = wc_ecc_import_wrapped_private(&kp, seed, (word32)sizeof(seed),
+    ret = wc_ecc_import_wrapped_private(&kp, ECC_SECP256R1, seed,
+                                        (word32)sizeof(seed),
                                        wrapped, 32, 32);
     if (ret != 0) {
         printf("  import wrapped private failed: %d\n", ret);
@@ -1059,7 +1079,8 @@ static int dhuk_provision_example(WC_RNG* rng)
          * on U3 the CCB path (WOLFSSL_STM32_CCB) keeps it out of software
          * entirely. */
         key.devId = WC_DHUK_DEVID;
-        ret = wc_ecc_import_wrapped_private(&key, seed, (word32)sizeof(seed),
+        ret = wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed,
+                                            (word32)sizeof(seed),
                                             wrappedPriv, 32, 32);
         if (ret == 0) {
             ret = wc_ecc_sign_hash(hash, (word32)sizeof(hash), sig, &sigLen,
@@ -1737,6 +1758,144 @@ static int test_dhuk_op_roundtrip(void)
 
 #endif /* WOLFSSL_DHUK && (BARE || CUBEMX) && WC_STM32_HAS_DHUK */
 
+
+#if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
+/* [10] Sign with a wrapped scalar imported onto a key that was never used for
+ * keygen -- the shape a product actually has at runtime, where provisioning
+ * happened in the factory and only the blob plus the seed reach flash. The
+ * surrounding ECDSA test starts from wc_ecc_make_key_ex(), which hides whether
+ * wc_ecc_import_wrapped_private() leaves the key ready to sign; this does not.
+ * The signature is verified against the public counterpart, so a scalar that
+ * unwrapped to the wrong value fails here rather than passing silently. */
+static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
+{
+    static const byte seed[32] = {
+        0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
+        0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,
+        0x10,0x32,0x54,0x76,0x98,0xba,0xdc,0xfe,
+        0xef,0xcd,0xab,0x89,0x67,0x45,0x23,0x01
+    };
+    static const byte hash[32] = {
+        0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,
+        0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,
+        0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,
+        0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20
+    };
+    ecc_key kp;
+    ecc_key signer;
+    ecc_key verifier;
+    Aes     aes;
+    byte    priv[32];
+    byte    wrapped[32];
+    byte    pub[65];
+    byte    sig[80];
+    word32  privSz = (word32)sizeof(priv);
+    word32  pubSz  = (word32)sizeof(pub);
+    word32  sigLen = (word32)sizeof(sig);
+    int     verify = 0;
+    int     dhukReg = 0;
+    int     ret;
+
+    ret = wc_Stm32_DhukRegister(WC_DHUK_DEVID);
+    if (ret != 0) {
+        printf("  DHUK register failed: %d\n", ret);
+        return ret;
+    }
+    dhukReg = 1;
+
+    /* Factory half: keypair, export the scalar and the public key. */
+    ret = wc_ecc_init(&kp);
+    if (ret != 0) {
+        goto cleanup;
+    }
+    ret = wc_ecc_make_key_ex(rng, 32, &kp, ECC_SECP256R1);
+    if (ret == 0) {
+        ret = wc_ecc_export_private_only(&kp, priv, &privSz);
+    }
+    if (ret == 0) {
+        ret = wc_ecc_export_x963(&kp, pub, &pubSz);
+    }
+    wc_ecc_free(&kp);
+    if (ret != 0 || privSz != 32u) {
+        printf("  provisioning failed: %d (privSz %lu)\n", ret,
+               (unsigned long)privSz);
+        ret = (ret != 0) ? ret : -1;
+        goto cleanup;
+    }
+
+    /* Wrap the scalar under the DHUK-derived key. */
+    ret = wc_AesInit(&aes, NULL, WC_DHUK_DEVID);
+    if (ret == 0) {
+        ret = wc_AesSetKey(&aes, seed, (word32)sizeof(seed), NULL,
+                           AES_ENCRYPTION);
+        if (ret == 0) {
+            ret = wc_AesEcbEncrypt(&aes, wrapped, priv, 32);
+        }
+        wc_AesFree(&aes);
+    }
+    wc_ForceZero(priv, sizeof(priv));
+    if (is_expected_gated(ret)) {
+        printf("  KEK wrap gated on this silicon (%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  KEK wrap failed: %d\n", ret);
+        goto cleanup;
+    }
+
+    /* Runtime half: a key that has only ever seen wc_ecc_init(). */
+    ret = wc_ecc_init(&signer);
+    if (ret != 0) {
+        goto cleanup;
+    }
+    signer.devId = WC_DHUK_DEVID;
+    ret = wc_ecc_import_wrapped_private(&signer, ECC_SECP256R1, seed,
+                                        (word32)sizeof(seed), wrapped, 32, 32);
+    if (ret == 0) {
+        ret = wc_ecc_sign_hash(hash, (word32)sizeof(hash), sig, &sigLen, rng,
+                               &signer);
+    }
+    wc_ecc_free(&signer);
+    if (is_expected_gated(ret)) {
+        printf("  DHUK sign gated on this silicon (%d) -- skipping\n", ret);
+        ret = 0;
+        goto cleanup;
+    }
+    if (ret != 0) {
+        printf("  sign after import failed: %d "
+               "(-170 means the import left no curve on the key)\n", ret);
+        goto cleanup;
+    }
+    printf("  signed with an imported scalar, no keygen (%lu-byte sig)\n",
+           (unsigned long)sigLen);
+
+    /* The signature must verify against the provisioned public key. */
+    ret = wc_ecc_init(&verifier);
+    if (ret == 0) {
+        ret = wc_ecc_import_x963_ex(pub, pubSz, &verifier, ECC_SECP256R1);
+        if (ret == 0) {
+            ret = wc_ecc_verify_hash(sig, sigLen, hash, (word32)sizeof(hash),
+                                     &verify, &verifier);
+        }
+        wc_ecc_free(&verifier);
+    }
+    if (ret != 0 || verify != 1) {
+        printf("  signature did not verify (ret=%d verify=%d) -- FAIL\n",
+               ret, verify);
+        ret = (ret != 0) ? ret : -1;
+        goto cleanup;
+    }
+    printf("  verifies against the provisioned public key OK\n");
+
+cleanup:
+    if (dhukReg) {
+        wc_Stm32_DhukUnRegister(WC_DHUK_DEVID);
+    }
+    return ret;
+}
+#endif /* HAVE_ECC && WOLFSSL_STM32_PKA */
+
 int main(void)
 {
     int ret = 0;
@@ -1801,6 +1960,13 @@ int main(void)
         if (ret == 0) {
             printf("\n[4] ECDSA sign via transparent DHUK crypto-callback:\n");
             ret = test_dhuk_cryptocb_ecdsa(&rng);
+        }
+#endif
+#if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
+        if (ret == 0) {
+            printf("\n[10] ECDSA sign from an imported wrapped scalar "
+                   "(no keygen):\n");
+            ret = test_dhuk_ecdsa_import_sign(&rng);
         }
 #endif
 #endif
