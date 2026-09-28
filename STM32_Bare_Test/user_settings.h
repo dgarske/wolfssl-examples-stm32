@@ -66,14 +66,16 @@ extern "C" {
 #elif defined(STM32_BOARD_U3)
     #define WOLFSSL_STM32U3
     /* U385 has AES + HASH + RNG + PKA (TinyAES IP) + SAES + DHUK.
-     * DHUK Wrap is validated on this chip from NS state (KEYSEL=HW,
-     * MODE=ENCRYPT path works; CCF asserts, deterministic chip-
-     * bound output). DhukOp's MODE=DECRYPT wrapped-key unwrap path
-     * does NOT complete from NS state on U3 -- SR.KEYVALID asserts
-     * but CCF never fires. Likely requires secure-state context.
-     * WOLFSSL_DHUK is therefore not enabled by default here; users
-     * can build with -DWOLFSSL_DHUK to exercise Wrap and to debug
-     * the unwrap path. */
+     * Both DHUK directions are validated on this chip from NS state:
+     * Wrap (KEYSEL=HW, MODE=ENCRYPT, deterministic chip-bound output)
+     * and the wrapped-key unwrap (MODE=KEYDERIVATION then MODE=DECRYPT),
+     * which signals completion via CCF with SR.KEYVALID confirming the
+     * loaded key. The two ARE inverses: a blob wrapped in
+     * WC_STM32_WRAP_ORDER_RAW unwraps back to the key it wrapped.
+     * Earlier notes here claimed the unwrap needed secure state and was
+     * not an inverse; both were driver bugs, since fixed.
+     * WOLFSSL_DHUK is still not enabled by default here; build with
+     * -DWOLFSSL_DHUK (TARGET=dhuk does this) to exercise it. */
     #define STM32_CRYPTO
     #define STM32_HASH
     #define STM32_RNG

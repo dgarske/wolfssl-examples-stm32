@@ -116,7 +116,8 @@ static int ccb_import_arg_checks(void)
         byte seed[32];
         XMEMSET(seed, 0x5a, sizeof(seed));
         key.dhuk_is_ccb = 1;
-        if (wc_ecc_import_wrapped_private(&key, seed, sizeof(seed),
+        if (wc_ecc_import_wrapped_private(&key, ECC_SECP256R1, seed,
+                sizeof(seed),
                 wrapped, 32, 32) != 0 || key.dhuk_is_ccb != 0) {
             fails++;
         }
