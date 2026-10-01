@@ -133,6 +133,8 @@ static void CRYP_Init(void)
 
 void hw_init(void)
 {
+    /* wolfBoot jumps to the app with interrupts masked */
+    __enable_irq();
     HAL_Init();
     SystemClock_Config();
     ICache_Init();

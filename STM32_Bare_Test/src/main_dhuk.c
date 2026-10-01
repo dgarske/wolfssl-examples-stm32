@@ -1830,7 +1830,7 @@ static int test_dhuk_op_roundtrip(void)
  * wc_ecc_import_wrapped_private() leaves the key ready to sign; this does not.
  * The signature is verified against the public counterpart, so a scalar that
  * unwrapped to the wrong value fails here rather than passing silently. */
-static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
+static int test_dhuk_ecdsa_import_sign(WC_RNG* rng, int curveId, word32 keySz)
 {
     static const byte seed[32] = {
         0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
@@ -1848,10 +1848,10 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
     ecc_key signer;
     ecc_key verifier;
     Aes     aes;
-    byte    priv[32];
-    byte    wrapped[32];
-    byte    pub[65];
-    byte    sig[80];
+    byte    priv[48];
+    byte    wrapped[48];
+    byte    pub[97];
+    byte    sig[112];
     word32  privSz = (word32)sizeof(priv);
     word32  pubSz  = (word32)sizeof(pub);
     word32  sigLen = (word32)sizeof(sig);
@@ -1871,7 +1871,7 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
     if (ret != 0) {
         goto cleanup;
     }
-    ret = wc_ecc_make_key_ex(rng, 32, &kp, ECC_SECP256R1);
+    ret = wc_ecc_make_key_ex(rng, (int)keySz, &kp, curveId);
     if (ret == 0) {
         ret = wc_ecc_export_private_only(&kp, priv, &privSz);
     }
@@ -1879,7 +1879,7 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
         ret = wc_ecc_export_x963(&kp, pub, &pubSz);
     }
     wc_ecc_free(&kp);
-    if (ret != 0 || privSz != 32u) {
+    if (ret != 0 || privSz != keySz) {
         printf("  provisioning failed: %d (privSz %lu)\n", ret,
                (unsigned long)privSz);
         ret = (ret != 0) ? ret : -1;
@@ -1892,7 +1892,7 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
         ret = wc_AesSetKey(&aes, seed, (word32)sizeof(seed), NULL,
                            AES_ENCRYPTION);
         if (ret == 0) {
-            ret = wc_AesEcbEncrypt(&aes, wrapped, priv, 32);
+            ret = wc_AesEcbEncrypt(&aes, wrapped, priv, keySz);
         }
         wc_AesFree(&aes);
     }
@@ -1913,8 +1913,9 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
         goto cleanup;
     }
     signer.devId = WC_DHUK_DEVID;
-    ret = wc_ecc_import_wrapped_private(&signer, ECC_SECP256R1, seed,
-                                        (word32)sizeof(seed), wrapped, 32, 32);
+    ret = wc_ecc_import_wrapped_private(&signer, curveId, seed,
+                                        (word32)sizeof(seed), wrapped, keySz,
+                                        keySz);
     if (ret == 0) {
         ret = wc_ecc_sign_hash(hash, (word32)sizeof(hash), sig, &sigLen, rng,
                                &signer);
@@ -1936,7 +1937,7 @@ static int test_dhuk_ecdsa_import_sign(WC_RNG* rng)
     /* The signature must verify against the provisioned public key. */
     ret = wc_ecc_init(&verifier);
     if (ret == 0) {
-        ret = wc_ecc_import_x963_ex(pub, pubSz, &verifier, ECC_SECP256R1);
+        ret = wc_ecc_import_x963_ex(pub, pubSz, &verifier, curveId);
         if (ret == 0) {
             ret = wc_ecc_verify_hash(sig, sigLen, hash, (word32)sizeof(hash),
                                      &verify, &verifier);
@@ -2035,9 +2036,16 @@ int main(void)
 #if defined(HAVE_ECC) && defined(WOLFSSL_STM32_PKA)
         if (ret == 0) {
             printf("\n[10] ECDSA sign from an imported wrapped scalar "
-                   "(no keygen):\n");
-            ret = test_dhuk_ecdsa_import_sign(&rng);
+                   "(no keygen), P-256:\n");
+            ret = test_dhuk_ecdsa_import_sign(&rng, ECC_SECP256R1, 32);
         }
+#ifdef HAVE_ECC384
+        if (ret == 0) {
+            printf("\n[11] ECDSA sign from an imported wrapped scalar "
+                   "(no keygen), P-384:\n");
+            ret = test_dhuk_ecdsa_import_sign(&rng, ECC_SECP384R1, 48);
+        }
+#endif
 #endif
 #endif
 #ifdef WOLFSSL_STM32_DHUK_UNWRAP

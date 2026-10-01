@@ -51,6 +51,9 @@ extern "C" {
 #define HAL_RNG_MODULE_ENABLED
 #define HAL_CRYP_MODULE_ENABLED
 #define HAL_HASH_MODULE_ENABLED
+#ifdef WOLFSSL_STM32_PKA
+    #define HAL_PKA_MODULE_ENABLED
+#endif
 
 /* ---------------- Oscillator values ---------------- */
 #if !defined(HSE_VALUE)
@@ -143,6 +146,9 @@ extern "C" {
 #endif
 #ifdef HAL_CRYP_MODULE_ENABLED
     #include "stm32u3xx_hal_cryp.h"
+#endif
+#ifdef HAL_PKA_MODULE_ENABLED
+    #include "stm32u3xx_hal_pka.h"
 #endif
 
 /* ---------------- assert_param() ------------------ */

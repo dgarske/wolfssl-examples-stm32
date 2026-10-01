@@ -53,8 +53,8 @@ endif
 ifeq ($(filter $(CONFIG),c asm bare),)
   $(error CONFIG must be one of: c | asm | bare)
 endif
-ifeq ($(filter $(TARGET),test bench dhuk stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign v8sha3),)
-  $(error TARGET must be one of: test | bench | dhuk | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign | v8sha3)
+ifeq ($(filter $(TARGET),test bench dhuk mtls stsaes ccb ccbhal c5rng c5sign cbonly puf cubeaes cubecrypto aesplain plaingcm gcmalign v8sha3),)
+  $(error TARGET must be one of: test | bench | dhuk | mtls | stsaes | ccb | ccbhal | c5rng | c5sign | cbonly | puf | cubeaes | cubecrypto | aesplain | plaingcm | gcmalign | v8sha3)
 endif
 # c5rng: bare register-level STM32C5 HW-RNG conditioning probe (no wolfCrypt).
 # c5sign: bare STM32C5 PROTECTED ECDSA-sign probe driving ST's NIST P-256 CAVP
@@ -371,6 +371,34 @@ ifeq ($(TARGET),test)
 endif
 ifeq ($(TARGET),bench)
   SRC_C += $(WOLFSSL_ROOT)/wolfcrypt/benchmark/benchmark.c
+endif
+
+# TLS 1.3 mutual auth with a DHUK-wrapped client key, client and server both
+# in this image over an in-memory transport. Same SAES + DHUK + PKA
+# requirement as the dhuk target, so the same board set. The src/ssl_*.c,
+# x509*.c, pk*.c, bio.c and conf.c files are #included into ssl.c and must not
+# be compiled standalone.
+ifeq ($(TARGET),mtls)
+  # Needs room for TLS 1.3 + ECC + the cert buffers (~250 KB flash, ~165 KB
+  # RAM), which rules out the small-memory boards in this matrix.
+  ifneq ($(filter $(BOARD),c031 g071 u083 wl55 f303 g474 g491 h7s3),)
+    $(error TARGET=mtls needs more flash/RAM than BOARD=$(BOARD) has)
+  endif
+  COMMON_DEFS += -DSTM32_BARE_MTLS
+  # SAES + DHUK + PKA boards additionally run the client key as a
+  # device-wrapped blob; everywhere else the same handshake uses an ordinary
+  # key, so the target is a plain TLS 1.3 mutual-auth regression test.
+  ifneq ($(filter $(BOARD),u3 u585 u545),)
+    # Only CONFIG=bare enables the PKA the wrapped key needs; any other config
+    # would quietly build the ordinary-key path on a device-key board.
+    ifneq ($(CONFIG),bare)
+      $(error TARGET=mtls on BOARD=$(BOARD) requires CONFIG=bare)
+    endif
+    COMMON_DEFS += -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB
+  endif
+  WC_SRC += $(addprefix $(WOLFSSL_ROOT)/src/, \
+              ssl.c internal.c tls.c tls13.c keys.c wolfio.c \
+              crl.c ocsp.c dtls.c dtls13.c quic.c)
 endif
 # DHUK crypto-callback test app (GMAC + AES-ECB + ECDSA sign). The ECC
 # sign route requires SAES + DHUK + PKA together, so this target is
