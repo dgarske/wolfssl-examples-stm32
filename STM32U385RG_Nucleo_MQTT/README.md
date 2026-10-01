@@ -182,6 +182,44 @@ mosquitto_pub --cafile certs/ca-cert.pem \
 
 Expect TLS 1.3 handshake, MQTT CONNECT/SUBACK, and round-trip publish.
 
+### 3a. mTLS with a DHUK-wrapped client key
+
+`DHUK=1` replaces the buffer-loaded client key with one whose private scalar
+only ever exists wrapped, unwrapped inside SAES for each signature:
+
+```bash
+make app CONFIG=hw DHUK=1                              # builds into build/app-hw-dhuk/
+make flash CONFIG=hw DHUK=1 TARGET=app SN=<stlink-sn>  # same variant path
+```
+
+`DHUK=1` requires `CONFIG=hw`; the build stops with an error for any other
+config. It builds to its own directory, so it never collides with the stock
+`app-hw` objects; pass the same `DHUK=1 TARGET=app` to `make flash` or it will
+flash a different variant. Run the host side exactly as above. The console adds one line per handshake:
+
+```
+[dhuk] client key provisioned (48-byte wrapped scalar)
+[dhuk] CertificateVerify signed on the device (103-byte sig)
+```
+
+The wrapped blob is bound to the silicon that produced it, so a build flashed
+to a different part will fail to sign. Note that the demo wraps the plaintext
+client key from `certs_gen.h` at startup in place of a factory provisioning
+step, so that scalar is present in flash and briefly in RAM; a product wraps it
+off-device and ships only the blob and the seed.
+
+Nothing in `dhuk_key.c` is family-specific: it uses only the portable wolfCrypt
+DHUK device plus `wolfSSL_CTX_use_PrivateKey_Id()`, and does not use the U3 CCB.
+The same file compiles and runs on any STM32 with SAES and PKA. The wrapped
+scalar sign path is validated on STM32U385 (U3), STM32U585 and STM32U545 (U5)
+for both P-256 and P-384; only this demo project's board scaffolding -- HAL
+pack, clock and UART init, linker script -- is U385-specific.
+
+`src/dhuk_key.c` explains how the key reaches TLS; the short version is that TLS
+is handed a key *id* bound to a crypto-callback device, because
+`wc_ecc_import_wrapped_private()` puts the blob on an `ecc_key` that TLS has no
+way to accept directly.
+
 ### 4. wolfCrypt FIPS 140-3 Ready
 
 ```bash
@@ -230,6 +268,10 @@ make wb-app CONFIG=hw               # app linked at 0x08010100
 make wb-sign CONFIG=hw              # sign with ECC384 + SHA384
 make wb-flash CONFIG=hw             # flash bootloader + signed app
 ```
+
+The wolfBoot-linked app builds into `build/app-hw-wb/`, separate from the flat
+`make app` output. Add `DHUK=1` to `wb-app`, `wb-sign` and `wb-flash` to build,
+sign and flash the `build/app-hw-dhuk-wb/` variant instead.
 
 ## Flash Layout (wolfBoot)
 

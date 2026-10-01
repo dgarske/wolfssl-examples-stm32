@@ -49,7 +49,9 @@ ifeq ($(filter $(CONFIG),c asm hw fips),)
   $(error CONFIG must be one of: c | asm | hw | fips)
 endif
 
-BUILD_DIR := $(TOP)/build/$(TARGET)-$(CONFIG)
+DHUK_SUFFIX := $(if $(filter 1,$(DHUK)),-dhuk)
+WB_SUFFIX := $(if $(WOLFBOOT),-wb)
+BUILD_DIR := $(TOP)/build/$(TARGET)-$(CONFIG)$(if $(filter app,$(TARGET)),$(DHUK_SUFFIX))$(WB_SUFFIX)
 
 # ----- MCU / arch flags ----------------------------------------------------
 MCU_FLAGS := -mcpu=cortex-m33 -mthumb -mfloat-abi=soft -mcmse
@@ -153,6 +155,23 @@ ifeq ($(TARGET),app)
   COMMON_DEFS += -DNO_CRYPT_TEST -DNO_CRYPT_BENCHMARK -DWOLFMQTT_DEMO
 endif
 
+# DHUK=1 makes the TLS client authenticate with a DHUK-wrapped private key
+# instead of one loaded from a buffer (src/dhuk_key.c). Needs the SAES+PKA
+# silicon, so it is U385-only, and AES-ECB for the provisioning wrap, which the
+# TLS 1.3 profile does not otherwise pull in. wolfCrypt's ECB decrypt is built
+# on the AES direct API, hence WOLFSSL_AES_DIRECT.
+# Applies to "make app DHUK=1"; the other targets build no TLS client and
+# ignore it. CONFIG=hw only: that variant builds the HAL crypto the SAES path
+# needs, and the device key path is outside the FIPS boundary.
+ifeq ($(DHUK)$(TARGET),1app)
+  ifneq ($(CONFIG),hw)
+    $(error DHUK=1 requires CONFIG=hw)
+  endif
+  COMMON_DEFS += -DDEMO_DHUK_CLIENT_KEY -DWOLFSSL_DHUK -DWOLF_CRYPTO_CB \
+                 -DWOLFSSL_STM32_PKA -DHAVE_AES_ECB -DWOLFSSL_AES_DIRECT
+  SRC_C += src/dhuk_key.c
+endif
+
 # CMSIS device files come from the STM32Cube U3 pack (NUCLEO-U385RG-Q
 # CubeIDE template — matches what we used to ship in src/, no MSPLIM use).
 PACK_NUCLEO_DIR := $(STM32CUBE_FW_U3)/Projects/NUCLEO-U385RG-Q/Templates_Board
@@ -182,6 +201,10 @@ HAL_SOURCES := \
 
 ifeq ($(CONFIG),hw)
 HAL_SOURCES += stm32u3xx_hal_hash.c stm32u3xx_hal_cryp.c stm32u3xx_hal_cryp_ex.c
+endif
+
+ifeq ($(DHUK)$(TARGET),1app)
+HAL_SOURCES += stm32u3xx_hal_pka.c
 endif
 
 HAL_SRC := $(addprefix $(HAL_SRC_DIR)/,$(HAL_SOURCES))
@@ -302,15 +325,21 @@ $(BUILD_DIR)/app.hex: $(BUILD_DIR)/app.elf
 
 size: $(BUILD_DIR)/app.elf
 	@echo
-	@echo "----- size: $(TARGET)-$(CONFIG) -----"
+	@echo "----- size: $(notdir $(BUILD_DIR)) -----"
 	@$(SIZE) $<
 
 # st-flash does NOT support STM32U3 (chipid 0x454). Use STM32_Programmer_CLI.
+# Set SN= when more than one ST-LINK is attached, or the programmer picks
+# whichever enumerates first and writes to the wrong board:
+#   make flash SN=0034004C3333511631363730     (st-info --probe lists them)
+SN ?=
+SN_ARG := $(if $(SN),sn=$(SN),)
+
 # Override on cmd line: make flash STM32_PROG=/path/to/STM32_Programmer_CLI
 STM32_PROG ?= /opt/st/stm32cubeide_2.0.0/plugins/com.st.stm32cube.ide.mcu.externaltools.cubeprogrammer.linux64_2.2.300.202508131133/tools/bin/STM32_Programmer_CLI
 
 flash: $(BUILD_DIR)/app.bin
-	$(STM32_PROG) -c port=SWD reset=HWrst -e all -d $(BUILD_DIR)/app.bin 0x08000000 -v -rst
+	$(STM32_PROG) -c port=SWD $(SN_ARG) reset=HWrst -e all -d $(BUILD_DIR)/app.bin 0x08000000 -v -rst
 
 size-report:
 	@echo "== STM32U385RG_Nucleo_MQTT size report =="
@@ -322,7 +351,7 @@ size-report:
 	done
 
 clean:
-	rm -rf build/$(TARGET)-$(CONFIG)
+	rm -rf $(BUILD_DIR)
 
 distclean:
 	rm -rf build
@@ -362,7 +391,7 @@ wb-app:
 	$(MAKE) build TARGET=app WOLFBOOT=1
 
 # wb-* targets always operate on the 'app' build dir regardless of TARGET=
-WB_APP_DIR := $(TOP)/build/app-$(CONFIG)
+WB_APP_DIR := $(TOP)/build/app-$(CONFIG)$(DHUK_SUFFIX)-wb
 
 wb-sign: wb-app
 	@echo "=== Signing app image (ECC384 / SHA384, v$(WB_APP_VERSION)) ==="
@@ -378,7 +407,7 @@ wb-flash:
 	@echo "=== Flashing wolfBoot + signed app ==="
 	@if [ ! -f "$(WOLFBOOT_ROOT)/wolfboot.bin" ]; then \
 	  echo "ERROR: wolfboot.bin not found. Run 'make wb-build' first"; exit 1; fi
-	$(STM32_PROG) -c port=SWD reset=HWrst -e all \
+	$(STM32_PROG) -c port=SWD $(SN_ARG) reset=HWrst -e all \
 	  -d $(WOLFBOOT_ROOT)/wolfboot.bin 0x08000000 \
 	  -d $(WB_APP_DIR)/app_v$(WB_APP_VERSION)_signed.bin $(WB_BOOT_ADDR) -v -rst
 	@echo "Flashed. Reset the board to boot."

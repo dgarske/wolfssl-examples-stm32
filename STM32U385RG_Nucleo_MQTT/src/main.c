@@ -58,6 +58,9 @@
     #include "wolfmqtt/mqtt_client.h"
     #include "uart_net.h"
     #include "certs.h"
+    #ifdef DEMO_DHUK_CLIENT_KEY
+        #include "dhuk_key.h"
+    #endif
     extern void UartNet_HW_Init(void);
 #endif
 
@@ -181,6 +184,14 @@ static int mqtt_tls_cb(MqttClient *client)
         return WOLFSSL_FAILURE;
     }
 
+#ifdef DEMO_DHUK_CLIENT_KEY
+    /* Client private key lives in a DHUK-wrapped blob, not in a buffer. Must
+     * follow the certificate load, which is what sets the key type and size. */
+    if (dhuk_client_key_use(ctx) != 0) {
+        wolfSSL_CTX_free(ctx);
+        return WOLFSSL_FAILURE;
+    }
+#else
     /* Load client private key (DER) */
     rc = wolfSSL_CTX_use_PrivateKey_buffer(ctx,
              DEMO_CLI_KEY_BUF, DEMO_CLI_KEY_SIZE,
@@ -190,6 +201,7 @@ static int mqtt_tls_cb(MqttClient *client)
         wolfSSL_CTX_free(ctx);
         return WOLFSSL_FAILURE;
     }
+#endif
 
     /* Verify peer cert + chain. Hostname check is a documented follow-up. */
     wolfSSL_CTX_set_verify(ctx, WOLFSSL_VERIFY_PEER, mqtt_tls_verify_cb);
@@ -213,6 +225,18 @@ static int mqtt_msg_cb(MqttClient *client, MqttMessage *msg,
         printf("\n");
     }
     return MQTT_CODE_SUCCESS;
+}
+
+/* SUBSCRIBE and QoS>0 PUBLISH both require a non-zero packet identifier
+ * ([MQTT-2.3.1-1]); wolfMQTT rejects a zero one with MQTT_CODE_ERROR_PACKET_ID. */
+static word16 demo_packet_id(void)
+{
+    static word16 packetId;
+
+    if (++packetId == 0) {
+        packetId = 1;
+    }
+    return packetId;
 }
 
 static int run_mqtt_demo(void)
@@ -275,6 +299,7 @@ static int run_mqtt_demo(void)
     memset(&topic_sub, 0, sizeof(topic_sub));
     topic_sub.topic_filter = MQTT_TOPIC_SUB;
     topic_sub.qos          = MQTT_QOS;
+    sub.packet_id   = demo_packet_id();
     sub.topic_count = 1;
     sub.topics      = &topic_sub;
 
@@ -300,6 +325,7 @@ static int run_mqtt_demo(void)
             pub.buffer      = (byte *)payload;
             pub.total_len   = (word16)plen;
             pub.qos         = MQTT_QOS;
+            pub.packet_id   = demo_packet_id();
 
             rc = MqttClient_Publish(&client, &pub);
             if (rc != MQTT_CODE_SUCCESS) {
@@ -385,8 +411,19 @@ int main(void)
 #endif
 
 #ifdef WOLFMQTT_DEMO
+#ifdef DEMO_DHUK_CLIENT_KEY
+    ret = dhuk_client_key_provision(DEMO_CLI_KEY_BUF, DEMO_CLI_KEY_SIZE,
+                                    ECC_SECP384R1);
+    if (ret != 0) {
+        printf("DHUK client key provisioning failed: %d\n", ret);
+        while (1) { __NOP(); }
+    }
+#endif
     ret = run_mqtt_demo();
     printf("Demo exited (rc=%d)\n", ret);
+#ifdef DEMO_DHUK_CLIENT_KEY
+    dhuk_client_key_cleanup();
+#endif
 #endif
 
 #ifdef WOLFMQTT_DEMO

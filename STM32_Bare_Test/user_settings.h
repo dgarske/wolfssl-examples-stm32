@@ -685,7 +685,11 @@ extern "C" {
 #define NO_WOLFSSL_SMALL_STACK
 #define WOLFSSL_USER_IO
 #define NO_MAIN_DRIVER
-#define WOLFCRYPT_ONLY
+/* WOLFCRYPT_ONLY drops the TLS layer; the mtls target is the one build that
+ * needs it. */
+#ifndef STM32_BARE_MTLS
+    #define WOLFCRYPT_ONLY
+#endif
 
 /* Timing resistance */
 #define ECC_TIMING_RESISTANT
@@ -995,6 +999,25 @@ extern "C" {
     #undef  WOLFSSL_SP_1024
     /* Drop ASN.1 (no certs needed without ECC/RSA) */
     #define NO_ASN
+#endif
+
+/* ------------------------------------------------------------------ */
+/* mTLS axis (Makefile TARGET=mtls -> -DSTM32_BARE_MTLS)                */
+/* TLS 1.3 only, ECDHE-ECDSA P-256, AES-GCM. The base config above      */
+/* already supplies AES-GCM, SHA-256/384, HKDF and ECC.                 */
+/* ------------------------------------------------------------------ */
+#ifdef STM32_BARE_MTLS
+    #define WOLFSSL_TLS13
+    #define WOLFSSL_NO_TLS12
+    #define NO_OLD_TLS
+    #define HAVE_TLS_EXTENSIONS
+    #define HAVE_SUPPORTED_CURVES
+    #define HAVE_EXTENDED_MASTER
+    #define NO_SESSION_CACHE
+    #define WOLFSSL_NO_SOCK
+    /* Client and server both run in this image, over an in-memory
+     * transport -- no sockets, no network stack. */
+    #define USE_CERT_BUFFERS_256
 #endif
 
 #ifdef __cplusplus

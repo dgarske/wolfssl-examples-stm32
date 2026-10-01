@@ -177,6 +177,7 @@ has nothing to accelerate.
 | `test` | `src/main_test.c` | wolfCrypt KATs (SHA-256, AES, RNG) plus the full `wolfcrypt_test` suite.      |
 | `bench`| `src/main_bench.c`| The wolfCrypt benchmark suite.                                               |
 | `dhuk` | `src/main_dhuk.c` | Transparent DHUK crypto-callback: GMAC, AES-ECB, and ECDSA sign.            |
+| `mtls` | `src/main_mtls.c` | TLS 1.3 mutual auth, client and server in one image over an in-memory transport. DHUK-wrapped client key where the silicon has it, ordinary key elsewhere. |
 | `ccb`  | `src/main_ccb.c`  | Transparent CCB-protected ECDSA (P-256) via `wc_ecc_sign_hash` -- bare + CubeMX. |
 | `ccbhal`| `src/main_ccbhal.c`| CubeMX `HAL_CCB_*` reference flow (provision + sign + SW-verify), `u3` only. |
 | `cbonly`| `src/main_cbonly.c`| Callback-only: ECDSA, full-payload AES-GCM, HMAC-SHA256, TRNG all on hardware, with the `STM32_BARE_CB_ONLY` software-strip preset. |
@@ -258,6 +259,53 @@ Test complete
 #### TZEN=1 secure-state note (B-U585I-IOT02A)
 
 The crypto-callback path above runs on STM32U385 with TZEN=0. On the B-U585I-IOT02A (which ships `TZEN=0x1` with bank-1 secure-watermarked, so the image at `0x08000000` runs secure) a `SECURE=1` build (`-mcmse`, which makes the CMSIS device header resolve every peripheral to its secure alias) was used to reach secure state. One board fix was needed: `board_init` had an unbounded wait on `PWR_SVMSR.REGS` after requesting the LDO->SMPS switch (`PWR_CR3.REGSEL`), which never latches on this board; that loop is now bounded and falls through on the already-ready LDO. Results are read from the `g_dhuk_res` debugger sink (the IOT02A VCP is not wired to this build's USART1 pins): the firmware reaches secure state and the setter validation passes, but the SAES key derivation currently stalls (`SR.BUSY` does not clear) under TZEN=1 secure context. **Secure execution alone does not unblock the derive on this silicon** -- it likely needs explicit GTZC/TZSC SAES-secure (and SAES RNG) configuration; this is open work. DHUK does not otherwise require secure state.
+
+#### mTLS with a DHUK-wrapped client key (`TARGET=mtls`)
+
+`TARGET=mtls` runs a TLS 1.3 client and server in one image over a pair of
+in-memory buffers, so there is no network stack, no sockets and no host involved.
+It is the only TLS target in this harness; everything else here is wolfCrypt only.
+
+On a board with SAES + DHUK + PKA (`u3`, `u585`, `u545`) the client's private key
+exists only as a DHUK-wrapped blob, which answers the narrow question: can a TLS
+client authenticate with a key that never appears in software? Those three boards
+require `CONFIG=bare`, the config that enables the PKA. On every other
+board the same handshake runs with an ordinary in-memory client key, so the target
+doubles as a plain TLS 1.3 mutual-auth regression test. `MTLS_HAVE_DHUK` selects
+between the two, and the board set is limited only by memory -- TLS 1.3 plus ECC
+and the cert buffers needs roughly 250 KB of flash and 165 KB of RAM.
+
+The piece that makes it work is a second crypto-callback device.
+`wc_ecc_import_wrapped_private()` puts the blob on an `ecc_key` the application
+owns, but TLS builds its own key internally -- from a DER buffer, or for an opaque
+key from a key id -- and that key carries no blob, so the DHUK device declines it
+and the handshake falls back to the software signer. Handing TLS a key *id* bound
+to a second device (`wolfSSL_CTX_use_PrivateKey_Id`) routes the CertificateVerify
+signature to the provisioned key instead. The certificate must be loaded before the
+key id: loading it is what sets the CTX private key type and size, which the id path
+does not carry. The devId belongs on the key, not on the CTX -- a CTX-wide devId
+would also send the ephemeral ECDHE keygen to the device.
+
+Test `[3]` is a negative control, and only runs where there is a device: it
+unregisters it and re-runs the same handshake, which must fail with `-170`.
+Without it, a passing `[2]` would not show that the wrapped key was what
+authenticated the client.
+
+```bash
+make BOARD=u585 CONFIG=bare TARGET=mtls flash
+```
+
+Nothing in `main_mtls.c` is family-specific and it does not use the U3 CCB.
+
+| Board | Family | Client key | Result |
+|---|---|---|---|
+| `u3` (NUCLEO-U385RG-Q)  | U3 | DHUK-wrapped | PASS |
+| `u585` (B-U585I-IOT02A) | U5 | DHUK-wrapped | PASS |
+| `u545` (NUCLEO-U545RE-Q)| U5 | DHUK-wrapped | PASS |
+| `h5` (NUCLEO-H563ZI)    | H5 | ordinary     | PASS |
+| `f767` (NUCLEO-F767ZI)  | F7 | ordinary     | PASS |
+| `l562` (STM32L562E-DK)  | L5 | ordinary     | PASS |
+| `f439` (NUCLEO-F439ZI)  | F4 | ordinary     | builds; not run on hardware |
 
 #### CCB-protected ECDSA (`TARGET=ccb`)
 
