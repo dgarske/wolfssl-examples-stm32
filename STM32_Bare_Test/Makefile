@@ -273,6 +273,17 @@ else
   PUF_DEFS :=
 endif
 
+# STACK_SZ overrides the linker's stack carve, in bytes. Every board's linker
+# script honours _stack_size, so this works on any BOARD. The carve sets
+# _heap_limit, the static ceiling _sbrk will not grow the heap past; src/stubs.c
+# additionally refuses to grow into the live stack, so an under-sized carve
+# surfaces as an allocation failure rather than heap/stack corruption.
+ifneq ($(STACK_SZ),)
+  LD_EXTRA := -Wl,--defsym=_stack_size=$(STACK_SZ)
+else
+  LD_EXTRA :=
+endif
+
 COMMON_DEFS := -DWOLFSSL_USER_SETTINGS $(CPU_DEFS) $(VARIANT_DEFS) $(BUILD_DEFS) $(PQC_DEFS) $(SHA3_DEFS) $(STACK_DEFS) $(GCM_DEFS) $(PUF_DEFS)
 
 # Optimization level, overridable for miscompile/UB bisects: make OPT=-O1 ...
@@ -301,6 +312,7 @@ LDFLAGS  := $(MCU_FLAGS) \
             --specs=nosys.specs --specs=nano.specs \
             $(PRINTF_FLOAT_FLAG) \
             -Wl,--gc-sections \
+            $(LD_EXTRA) \
             -Wl,-Map=$(BUILD_DIR)/app.map \
             -Wl,--print-memory-usage
 
