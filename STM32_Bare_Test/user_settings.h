@@ -1091,6 +1091,29 @@ extern "C" {
     #define USE_CERT_BUFFERS_256
 #endif
 
+/* ------------------------------------------------------------------ */
+/* Fast-math axis (EXTRA_DEFS=-DSTM32_BARE_FASTMATH)                    */
+/* TFM instead of SP math. Worth running on every PKA board: with       */
+/* WOLFSSL_HAVE_SP_ECC, key generation and ECDH are done in software    */
+/* and never reach the PKA, so the hardware scalar multiply is only     */
+/* exercised without it.                                                */
+/* ------------------------------------------------------------------ */
+#ifdef STM32_BARE_FASTMATH
+    #undef  WOLFSSL_SP_MATH
+    #undef  WOLFSSL_HAVE_SP_ECC
+    #undef  WOLFSSL_SP_384
+    #undef  WOLFSSL_SP_521
+    #undef  WOLFSSL_SP_SMALL
+    #undef  SP_WORD_SIZE
+    #define USE_FAST_MATH
+    #define TFM_TIMING_RESISTANT
+    #define TFM_ECC256
+    #define FP_MAX_BITS (1024 * 2)
+    /* Curve25519 / Ed25519 take the SP fe_operations path here. */
+    #undef  HAVE_CURVE25519
+    #undef  HAVE_ED25519
+#endif
+
 #ifdef __cplusplus
 }
 #endif
